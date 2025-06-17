@@ -686,10 +686,11 @@ class PerfectGameClient:
         self.input_state['mouse_clicked'] = False
     
     def update_game_objects(self, dt: float):
-        """更新游戏对象"""
-        # 更新所有玩家位置
-        for player in self.players.values():
-            player.update_position(dt)
+        """更新游戏对象 - 修复：只更新远程玩家，避免重复更新本地玩家"""
+        # 只更新远程玩家位置，本地玩家已在update_local_player中更新
+        for player_id, player in self.players.items():
+            if player_id != self.player_id:  # 只更新其他玩家
+                player.update_position(dt)
         
         # 更新子弹位置
         bullets_to_remove = []
