@@ -16,7 +16,8 @@ import os
 import sys
 import time
 import uuid
-from typing import Dict, Optional
+import socket
+from typing import Dict, Optional, List
 import pygame
 import websockets
 from websockets.client import WebSocketClientProtocol
@@ -31,6 +32,25 @@ from tank_game_messages import *
 # 加载环境变量
 load_dotenv()
 
+def get_local_ip():
+    """获取本机IP地址"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        try:
+            # 方法2：获取主机名对应的IP
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            if not local_ip.startswith('127.'):
+                return local_ip
+        except Exception:
+            pass
+        return "127.0.0.1"  # 最后的fallback
+
 # 游戏配置
 SCREEN_WIDTH = int(os.getenv('SCREEN_WIDTH', 800))
 SCREEN_HEIGHT = int(os.getenv('SCREEN_HEIGHT', 600))
@@ -38,10 +58,14 @@ FPS = int(os.getenv('FPS', 60))
 TANK_SPEED = int(os.getenv('TANK_SPEED', 300))
 DEFAULT_FONT_PATH = os.getenv('DEFAULT_FONT_PATH', None)
 
-# 服务器连接配置
-SERVER_HOST = os.getenv('SERVER_HOST', 'localhost')
+# 服务器连接配置 - 使用真实IP地址
+DEFAULT_LOCAL_IP = get_local_ip()
+SERVER_HOST = os.getenv('SERVER_HOST', DEFAULT_LOCAL_IP)  # 使用真实IP而不是localhost
 SERVER_PORT = int(os.getenv('SERVER_PORT', 8765))
 DEFAULT_SERVER_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}"
+
+print(f"🌐 Auto-detected local IP: {DEFAULT_LOCAL_IP}")
+print(f"🎯 Default server URL: {DEFAULT_SERVER_URL}")
 
 # 颜色定义
 COLORS = {
@@ -792,7 +816,14 @@ async def main():
                        help='Server host (e.g., 192.168.1.100)')
     parser.add_argument('--port', '-p', type=int, 
                        help='Server port (default: 8765)')
+    parser.add_argument('--scan', action='store_true',
+                       help='Scan local network for available servers')
     args = parser.parse_args()
+    
+    # 如果用户要求扫描网络
+    if args.scan:
+        display_connection_help()
+        return
     
     # 确定服务器URL
     if args.server:
@@ -813,7 +844,13 @@ async def main():
     print("  • Smooth 60 FPS rendering")
     print("  • Event-driven input handling")
     print("=" * 50)
-    print(f"🌐 Connecting to server: {server_url}")
+    print(f"🌐 Target server: {server_url}")
+    if server_url == DEFAULT_SERVER_URL:
+        print(f"📍 Local machine IP: {DEFAULT_LOCAL_IP}")
+        print("💡 This will connect to the server running on this computer")
+    else:
+        print("💡 This will connect to a remote server")
+    print("💡 Tip: Use --scan to find servers on local network")
     print("=" * 50)
     
     client = PerfectGameClient(server_url)
@@ -832,12 +869,91 @@ async def main():
             print("  • Verify server IP address and port")
             print("  • Check firewall settings")
             print("  • Ensure both computers are on the same network")
+            print("  • Try: python home/tank_game_client.py --scan")
     
     except KeyboardInterrupt:
         print("\n🛑 Client shutting down...")
     
     finally:
         await client.disconnect()
+
+
+def scan_local_servers(port: int = 8765) -> List[str]:
+    """扫描局域网内的游戏服务器"""
+    local_ip = get_local_ip()
+    if local_ip == "127.0.0.1":
+        return []
+    
+    # 获取网络段
+    ip_parts = local_ip.split('.')
+    network_base = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}"
+    
+    available_servers = []
+    
+    print(f"🔍 Scanning network {network_base}.x for game servers...")
+    
+    # 扫描常见的IP范围（简化版，只扫描部分IP）
+    scan_ips = [
+        f"{network_base}.1",    # 路由器
+        f"{network_base}.100",  # 常见服务器IP
+        f"{network_base}.101", 
+        f"{network_base}.102",
+        f"{network_base}.110",
+        f"{network_base}.200",
+        local_ip,  # 本机
+    ]
+    
+    for ip in scan_ips:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.5)  # 500ms超时
+            result = s.connect_ex((ip, port))
+            s.close()
+            
+            if result == 0:
+                available_servers.append(ip)
+                print(f"✅ Found server at {ip}:{port}")
+        except Exception:
+            pass
+    
+    return available_servers
+
+def display_connection_help():
+    """显示连接帮助信息"""
+    local_ip = get_local_ip()
+    
+    print("🌐 Network Connection Help")
+    print("=" * 40)
+    print(f"📍 Your machine IP: {local_ip}")
+    print()
+    print("🔍 Auto-scanning for servers...")
+    
+    servers = scan_local_servers()
+    
+    if servers:
+        print(f"✅ Found {len(servers)} server(s):")
+        for server_ip in servers:
+            print(f"   • {server_ip}:8765")
+        print()
+        print("💻 Connection commands:")
+        for server_ip in servers:
+            if server_ip == local_ip:
+                print(f"   • Local server:  python home/tank_game_client.py")
+            else:
+                print(f"   • Remote server: python home/tank_game_client.py --host {server_ip}")
+    else:
+        print("❌ No servers found on local network")
+        print()
+        print("💡 Connection options:")
+        print(f"   • Local server:  python home/tank_game_client.py")
+        print(f"   • Remote server: python home/tank_game_client.py --host [TARGET_IP]")
+        print()
+        print("🔧 Make sure:")
+        print("   • Server is running on target machine")
+        print("   • Both machines are on same network")
+        print("   • Firewall allows port 8765")
+    
+    print("=" * 40)
 
 
 if __name__ == "__main__":

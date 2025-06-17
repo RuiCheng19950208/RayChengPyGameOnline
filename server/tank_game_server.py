@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import uuid
+import socket
 from typing import Dict, List, Optional, Set
 import websockets
 from websockets.server import WebSocketServerProtocol
@@ -47,6 +48,86 @@ BULLET_LIFETIME = float(os.getenv('BULLET_LIFETIME', 5.0))
 SERVER_HOST = os.getenv('SERVER_HOST', 'localhost')
 SERVER_PORT = int(os.getenv('SERVER_PORT', 8765))
 MAX_PLAYERS_PER_ROOM = int(os.getenv('MAX_PLAYERS_PER_ROOM', 8))
+
+def get_local_ip():
+    """自动获取本机局域网IP地址"""
+    try:
+        # 方法1：连接到远程地址获取本机IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        try:
+            # 方法2：获取主机名对应的IP
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            if not local_ip.startswith('127.'):
+                return local_ip
+        except Exception:
+            pass
+    
+    # 方法3：遍历所有网络接口
+    try:
+        import subprocess
+        import platform
+        
+        system = platform.system()
+        if system in ["Darwin", "Linux"]:  # macOS or Linux
+            result = subprocess.run(['ifconfig'], capture_output=True, text=True)
+            if result.returncode == 0:
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if 'inet ' in line and not '127.0.0.1' in line:
+                        parts = line.strip().split()
+                        for i, part in enumerate(parts):
+                            if part == 'inet' and i + 1 < len(parts):
+                                ip = parts[i + 1]
+                                if ip.startswith('192.168.') or ip.startswith('10.') or ip.startswith('172.'):
+                                    return ip
+        elif system == "Windows":
+            result = subprocess.run(['ipconfig'], capture_output=True, text=True)
+            if result.returncode == 0:
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if 'IPv4' in line:
+                        ip = line.split(':')[-1].strip()
+                        if ip.startswith('192.168.') or ip.startswith('10.') or ip.startswith('172.'):
+                            return ip
+    except Exception:
+        pass
+    
+    return 'localhost'
+
+def display_server_info(host: str, port: int):
+    """显示服务器连接信息"""
+    print("=" * 60)
+    print("🎮 Tank Game Server Started Successfully!")
+    print("=" * 60)
+    
+    if host == '0.0.0.0':
+        local_ip = get_local_ip()
+        print(f"🖥️  Server Host: {host} (listening on all interfaces)")
+        print(f"🌐 Local IP: {local_ip}")
+        print(f"🔌 Port: {port}")
+        print()
+        print("📱 Client Connection Info:")
+        print(f"   • Same computer: ws://localhost:{port}")
+        print(f"   • Other computers: ws://{local_ip}:{port}")
+        print()
+        print("💻 Client Commands:")
+        print(f"   • Local: python home/tank_game_client.py")
+        print(f"   • Remote: python home/tank_game_client.py --host {local_ip}")
+        print(f"   • Custom: python home/tank_game_client.py --server ws://{local_ip}:{port}")
+    else:
+        print(f"🖥️  Server Host: {host}")
+        print(f"🔌 Port: {port}")
+        print(f"🌐 Connection URL: ws://{host}:{port}")
+    
+    print()
+    print("🔥 Ready for battle! Waiting for players...")
+    print("=" * 60)
 
 class Player:
     """玩家数据类"""
@@ -343,14 +424,12 @@ class TankGameServer:
     async def start(self):
         """启动服务器"""
         self.running = True
-        print(f"🚀 Starting server on ws://{self.host}:{self.port}")
         
         # 启动游戏循环
         self.game_loop_task = asyncio.create_task(self.game_loop())
         
         # 启动 WebSocket 服务器
         async with websockets.serve(self.handle_client, self.host, self.port):
-            print(f"✅ Server running on ws://{self.host}:{self.port}")
             await asyncio.Future()  # 永远运行
     
     async def stop(self):
@@ -621,6 +700,7 @@ async def main():
     """主函数"""
     server = TankGameServer()
     try:
+        display_server_info(SERVER_HOST, SERVER_PORT)
         await server.start()
     except KeyboardInterrupt:
         print("\n🛑 Server shutting down...")
