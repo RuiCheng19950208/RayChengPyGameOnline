@@ -58,6 +58,61 @@ FPS = int(os.getenv('FPS', 60))
 TANK_SPEED = int(os.getenv('TANK_SPEED', 300))
 DEFAULT_FONT_PATH = os.getenv('DEFAULT_FONT_PATH', None)
 
+# 分辨率自适应配置
+ENABLE_RESOLUTION_ADAPTATION = os.getenv('ENABLE_RESOLUTION_ADAPTATION', 'true').lower() == 'true'
+MIN_SCALE_FACTOR = float(os.getenv('MIN_SCALE_FACTOR', '0.8'))
+MAX_SCALE_FACTOR = float(os.getenv('MAX_SCALE_FACTOR', '2.0'))
+
+def get_optimal_screen_size():
+    """获取最佳屏幕尺寸"""
+    if not ENABLE_RESOLUTION_ADAPTATION:
+        return SCREEN_WIDTH, SCREEN_HEIGHT, 1.0
+    
+    try:
+        import pygame
+        pygame.init()
+        
+        # 获取显示器信息
+        display_info = pygame.display.Info()
+        screen_width = display_info.current_w
+        screen_height = display_info.current_h
+        
+        print(f"🖥️ Detected screen resolution: {screen_width}x{screen_height}")
+        
+        # 计算缩放因子
+        scale_x = screen_width / SCREEN_WIDTH
+        scale_y = screen_height / SCREEN_HEIGHT
+        scale_factor = min(scale_x, scale_y)  # 保持宽高比
+        
+        # 限制缩放范围
+        scale_factor = max(MIN_SCALE_FACTOR, min(MAX_SCALE_FACTOR, scale_factor))
+        
+        # 计算实际窗口大小
+        actual_width = int(SCREEN_WIDTH * scale_factor)
+        actual_height = int(SCREEN_HEIGHT * scale_factor)
+        
+        # 确保不超过屏幕尺寸
+        if actual_width > screen_width * 0.9:
+            scale_factor = (screen_width * 0.9) / SCREEN_WIDTH
+            actual_width = int(SCREEN_WIDTH * scale_factor)
+            actual_height = int(SCREEN_HEIGHT * scale_factor)
+        
+        if actual_height > screen_height * 0.9:
+            scale_factor = (screen_height * 0.9) / SCREEN_HEIGHT
+            actual_width = int(SCREEN_WIDTH * scale_factor)
+            actual_height = int(SCREEN_HEIGHT * scale_factor)
+        
+        print(f"🎯 Game window size: {actual_width}x{actual_height} (scale: {scale_factor:.2f})")
+        
+        return actual_width, actual_height, scale_factor
+        
+    except Exception as e:
+        print(f"⚠️ Failed to detect screen resolution: {e}")
+        return SCREEN_WIDTH, SCREEN_HEIGHT, 1.0
+
+# 获取最佳屏幕配置
+ACTUAL_SCREEN_WIDTH, ACTUAL_SCREEN_HEIGHT, DISPLAY_SCALE = get_optimal_screen_size()
+
 # 服务器连接配置 - 使用真实IP地址
 DEFAULT_LOCAL_IP = get_local_ip()
 SERVER_HOST = os.getenv('SERVER_HOST', DEFAULT_LOCAL_IP)  # 使用真实IP而不是localhost
@@ -221,35 +276,63 @@ class PerfectGameClient:
         
         # 初始化 Pygame
         pygame.init()
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("坦克大战 - 完美版 ✨")
+        self.screen = pygame.display.set_mode((ACTUAL_SCREEN_WIDTH, ACTUAL_SCREEN_HEIGHT))
+        pygame.display.set_caption(f"坦克大战 - 完美版 ✨ ({ACTUAL_SCREEN_WIDTH}x{ACTUAL_SCREEN_HEIGHT})")
         self.clock = pygame.time.Clock()
         
-        # 字体
+        # 分辨率适配
+        self.display_scale = DISPLAY_SCALE
+        self.game_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))  # 游戏逻辑表面
+        
+        print(f"🎮 Display scale factor: {self.display_scale:.2f}")
+        if self.display_scale != 1.0:
+            print(f"📏 Game coordinates: {SCREEN_WIDTH}x{SCREEN_HEIGHT}")
+            print(f"🖥️ Display size: {ACTUAL_SCREEN_WIDTH}x{ACTUAL_SCREEN_HEIGHT}")
+        
+        # 字体 - 根据缩放调整字体大小
+        font_scale = max(1.0, self.display_scale)
+        base_font_size = 24
+        small_font_size = 16  
+        big_font_size = 32
+        
         try:
             # 尝试加载指定字体文件
             if DEFAULT_FONT_PATH and os.path.exists(DEFAULT_FONT_PATH):
-                self.font = pygame.font.Font(DEFAULT_FONT_PATH, 24)
-                self.small_font = pygame.font.Font(DEFAULT_FONT_PATH, 16)
-                self.big_font = pygame.font.Font(DEFAULT_FONT_PATH, 32)
-                print(f"✅ Loaded custom font: {DEFAULT_FONT_PATH}")
+                self.font = pygame.font.Font(DEFAULT_FONT_PATH, int(base_font_size * font_scale))
+                self.small_font = pygame.font.Font(DEFAULT_FONT_PATH, int(small_font_size * font_scale))
+                self.big_font = pygame.font.Font(DEFAULT_FONT_PATH, int(big_font_size * font_scale))
+                print(f"✅ Loaded custom font: {DEFAULT_FONT_PATH} (scaled)")
             else:
                 # 字体文件不存在，使用默认字体
-                self.font = pygame.font.Font(None, 24)
-                self.small_font = pygame.font.Font(None, 16)
-                self.big_font = pygame.font.Font(None, 32)
+                self.font = pygame.font.Font(None, int(base_font_size * font_scale))
+                self.small_font = pygame.font.Font(None, int(small_font_size * font_scale))
+                self.big_font = pygame.font.Font(None, int(big_font_size * font_scale))
                 if DEFAULT_FONT_PATH:
-                    print(f"⚠️ Custom font not found: {DEFAULT_FONT_PATH}, using default font")
+                    print(f"⚠️ Custom font not found: {DEFAULT_FONT_PATH}, using default font (scaled)")
                 else:
-                    print("ℹ️ No custom font specified, using default font")
+                    print("ℹ️ No custom font specified, using default font (scaled)")
         except Exception as e:
             # 加载字体时出现异常，使用默认字体
-            self.font = pygame.font.Font(None, 24)
-            self.small_font = pygame.font.Font(None, 16)
-            self.big_font = pygame.font.Font(None, 32)
-            print(f"⚠️ Error loading font: {e}, using default font")
+            self.font = pygame.font.Font(None, int(base_font_size * font_scale))
+            self.small_font = pygame.font.Font(None, int(small_font_size * font_scale))
+            self.big_font = pygame.font.Font(None, int(big_font_size * font_scale))
+            print(f"⚠️ Error loading font: {e}, using default font (scaled)")
         
         print(f"✨ PerfectGameClient initialized for {server_url}")
+    
+    def screen_to_game_coords(self, screen_pos):
+        """将屏幕坐标转换为游戏坐标"""
+        x, y = screen_pos
+        game_x = x / self.display_scale
+        game_y = y / self.display_scale
+        return (game_x, game_y)
+    
+    def game_to_screen_coords(self, game_pos):
+        """将游戏坐标转换为屏幕坐标"""
+        x, y = game_pos
+        screen_x = x * self.display_scale
+        screen_y = y * self.display_scale
+        return (int(screen_x), int(screen_y))
     
     async def connect(self):
         """连接到服务器"""
@@ -484,7 +567,8 @@ class PerfectGameClient:
                 self.input_state['mouse_clicked'] = True
         
         elif event.type == pygame.MOUSEMOTION:
-            self.input_state['mouse_pos'] = event.pos
+            # 转换鼠标坐标到游戏坐标系
+            self.input_state['mouse_pos'] = self.screen_to_game_coords(event.pos)
     
     def update_local_player(self, dt: float):
         """更新本地玩家 - 与服务器完全相同的算法"""
@@ -618,8 +702,9 @@ class PerfectGameClient:
             del self.bullets[bullet_id]
     
     def render(self):
-        """完美渲染"""
-        self.screen.fill(COLORS['BLACK'])
+        """完美渲染 - 支持分辨率缩放"""
+        # 在游戏表面上渲染（固定800x600）
+        self.game_surface.fill(COLORS['BLACK'])
         
         # 渲染玩家
         for player_id, player in self.players.items():
@@ -631,16 +716,16 @@ class PerfectGameClient:
             
             # 绘制坦克
             tank_rect = pygame.Rect(pos['x'] - 15, pos['y'] - 15, 30, 30)
-            pygame.draw.rect(self.screen, color, tank_rect)
+            pygame.draw.rect(self.game_surface, color, tank_rect)
             
             # 如果是本地玩家，添加特殊标识
             if player_id == self.player_id:
-                pygame.draw.rect(self.screen, COLORS['ORANGE'], tank_rect, 3)
+                pygame.draw.rect(self.game_surface, COLORS['ORANGE'], tank_rect, 3)
             
             # 绘制玩家名称
             name_text = self.small_font.render(player.name, True, COLORS['WHITE'])
             name_rect = name_text.get_rect(center=(pos['x'], pos['y'] - 25))
-            self.screen.blit(name_text, name_rect)
+            self.game_surface.blit(name_text, name_rect)
             
             # 绘制血条
             if player.health < player.max_health:
@@ -650,24 +735,31 @@ class PerfectGameClient:
                 
                 # 背景
                 health_bg = pygame.Rect(pos['x'] - 15, pos['y'] - 35, health_width, health_height)
-                pygame.draw.rect(self.screen, COLORS['RED'], health_bg)
+                pygame.draw.rect(self.game_surface, COLORS['RED'], health_bg)
                 
                 # 血量
                 health_fg = pygame.Rect(pos['x'] - 15, pos['y'] - 35, 
                                       health_width * health_ratio, health_height)
-                pygame.draw.rect(self.screen, COLORS['GREEN'], health_fg)
+                pygame.draw.rect(self.game_surface, COLORS['GREEN'], health_fg)
         
         # 渲染子弹
         for bullet in self.bullets.values():
             pos = bullet.position
-            pygame.draw.circle(self.screen, COLORS['YELLOW'], 
+            pygame.draw.circle(self.game_surface, COLORS['YELLOW'], 
                              (int(pos['x']), int(pos['y'])), 4)
             # 子弹中心点
-            pygame.draw.circle(self.screen, COLORS['WHITE'], 
+            pygame.draw.circle(self.game_surface, COLORS['WHITE'], 
                              (int(pos['x']), int(pos['y'])), 2)
         
         # 渲染 UI
         self.render_ui()
+        
+        # 将游戏表面缩放到实际屏幕尺寸
+        if self.display_scale != 1.0:
+            scaled_surface = pygame.transform.scale(self.game_surface, (ACTUAL_SCREEN_WIDTH, ACTUAL_SCREEN_HEIGHT))
+            self.screen.blit(scaled_surface, (0, 0))
+        else:
+            self.screen.blit(self.game_surface, (0, 0))
         
         pygame.display.flip()
         
@@ -687,52 +779,59 @@ class PerfectGameClient:
         status_text = "Connected" if self.connected else "Disconnected"
         status_color = COLORS['GREEN'] if self.connected else COLORS['RED']
         status_surface = self.font.render(f"Status: {status_text}", True, status_color)
-        self.screen.blit(status_surface, (10, y_offset))
+        self.game_surface.blit(status_surface, (10, y_offset))
         y_offset += 25
         
         # 玩家信息
         if self.player_id:
             player_text = f"Player: {self.player_name}"
             player_surface = self.font.render(player_text, True, COLORS['WHITE'])
-            self.screen.blit(player_surface, (10, y_offset))
+            self.game_surface.blit(player_surface, (10, y_offset))
             y_offset += 25
         
         # 网络延迟
         ping_color = COLORS['GREEN'] if self.current_ping < 50 else COLORS['ORANGE'] if self.current_ping < 100 else COLORS['RED']
         ping_text = f"Ping: {self.current_ping}ms"
         ping_surface = self.font.render(ping_text, True, ping_color)
-        self.screen.blit(ping_surface, (10, y_offset))
+        self.game_surface.blit(ping_surface, (10, y_offset))
         y_offset += 25
         
         # FPS 显示
         fps_color = COLORS['GREEN'] if self.fps_counter >= 55 else COLORS['ORANGE'] if self.fps_counter >= 30 else COLORS['RED']
         fps_text = f"FPS: {self.fps_counter}"
         fps_surface = self.font.render(fps_text, True, fps_color)
-        self.screen.blit(fps_surface, (10, y_offset))
+        self.game_surface.blit(fps_surface, (10, y_offset))
         y_offset += 25
         
         # 游戏统计
         stats_text = f"Players: {len(self.players)} | Bullets: {len(self.bullets)}"
         stats_surface = self.font.render(stats_text, True, COLORS['WHITE'])
-        self.screen.blit(stats_surface, (10, y_offset))
+        self.game_surface.blit(stats_surface, (10, y_offset))
         y_offset += 25
+        
+        # 分辨率信息
+        if self.display_scale != 1.0:
+            resolution_text = f"Scale: {self.display_scale:.2f}x ({ACTUAL_SCREEN_WIDTH}x{ACTUAL_SCREEN_HEIGHT})"
+            resolution_surface = self.small_font.render(resolution_text, True, COLORS['CYAN'])
+            self.game_surface.blit(resolution_surface, (10, y_offset))
+            y_offset += 20
         
         # 优化信息
         optimization_text = "✨ PERFECT CLIENT"
         opt_surface = self.big_font.render(optimization_text, True, COLORS['CYAN'])
-        self.screen.blit(opt_surface, (10, y_offset))
+        self.game_surface.blit(opt_surface, (10, y_offset))
         y_offset += 35
         
-        smooth_info = "Consistent Prediction + Zero Jitter + Perfect Sync"
+        smooth_info = "Resolution Adaptive + Zero Jitter + Perfect Sync"
         smooth_surface = self.small_font.render(smooth_info, True, COLORS['CYAN'])
-        self.screen.blit(smooth_surface, (10, y_offset))
+        self.game_surface.blit(smooth_surface, (10, y_offset))
         
         # 位置信息（调试）
         if self.player_id and self.player_id in self.players:
             pos = self.players[self.player_id].position
             pos_text = f"Position: ({pos['x']:.1f}, {pos['y']:.1f})"
             pos_surface = self.small_font.render(pos_text, True, COLORS['GRAY'])
-            self.screen.blit(pos_surface, (10, y_offset + 25))
+            self.game_surface.blit(pos_surface, (10, y_offset + 25))
         
         # 控制说明
         controls = [
@@ -743,7 +842,7 @@ class PerfectGameClient:
         
         for i, control in enumerate(controls):
             control_surface = self.small_font.render(control, True, COLORS['GRAY'])
-            self.screen.blit(control_surface, (SCREEN_WIDTH - 150, 10 + i * 20))
+            self.game_surface.blit(control_surface, (SCREEN_WIDTH - 150, 10 + i * 20))
 
 
 async def perfect_game_loop(client: PerfectGameClient):
@@ -862,6 +961,10 @@ async def main():
     print("  • Minimal server corrections")
     print("  • Smooth 60 FPS rendering")
     print("  • Event-driven input handling")
+    if ENABLE_RESOLUTION_ADAPTATION:
+        print(f"  • Resolution adaptive ({ACTUAL_SCREEN_WIDTH}x{ACTUAL_SCREEN_HEIGHT})")
+    else:
+        print(f"  • Fixed resolution ({SCREEN_WIDTH}x{SCREEN_HEIGHT})")
     print("=" * 50)
     print(f"🌐 Target server: {server_url}")
     if server_url == DEFAULT_SERVER_URL:
