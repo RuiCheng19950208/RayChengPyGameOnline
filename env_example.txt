@@ -18,8 +18,8 @@ SERVER_PORT=8765
 MAX_PLAYERS_PER_ROOM=8
 
 # 分辨率自适应配置 - Resolution Adaptation Settings
-# 启用分辨率自适应，自动调整窗口大小以适应不同屏幕
-ENABLE_RESOLUTION_ADAPTATION=true
+# 启用分辨率自适应，自动调整窗口大小以适应不同屏幕（默认关闭，保持固定窗口大小）
+ENABLE_RESOLUTION_ADAPTATION=false
 # 最小缩放因子，防止窗口过小
 MIN_SCALE_FACTOR=0.8
 # 最大缩放因子，防止窗口过大
