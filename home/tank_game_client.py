@@ -21,6 +21,7 @@ import pygame
 import websockets
 from websockets.client import WebSocketClientProtocol
 from dotenv import load_dotenv
+import argparse
 
 # 添加共享目录到 Python 路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'shared'))
@@ -36,6 +37,11 @@ SCREEN_HEIGHT = int(os.getenv('SCREEN_HEIGHT', 600))
 FPS = int(os.getenv('FPS', 60))
 TANK_SPEED = int(os.getenv('TANK_SPEED', 300))
 DEFAULT_FONT_PATH = os.getenv('DEFAULT_FONT_PATH', None)
+
+# 服务器连接配置
+SERVER_HOST = os.getenv('SERVER_HOST', 'localhost')
+SERVER_PORT = int(os.getenv('SERVER_PORT', 8765))
+DEFAULT_SERVER_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}"
 
 # 颜色定义
 COLORS = {
@@ -152,7 +158,7 @@ class PerfectBulletState:
 class PerfectGameClient:
     """完美游戏客户端"""
     
-    def __init__(self, server_url: str = "ws://localhost:8765"):
+    def __init__(self, server_url: str = DEFAULT_SERVER_URL):
         self.server_url = server_url
         self.websocket: Optional[WebSocketClientProtocol] = None
         self.connected = False
@@ -197,13 +203,27 @@ class PerfectGameClient:
         
         # 字体
         try:
-            self.font = pygame.font.Font(DEFAULT_FONT_PATH, 24)
-            self.small_font = pygame.font.Font(DEFAULT_FONT_PATH, 16)
-            self.big_font = pygame.font.Font(DEFAULT_FONT_PATH, 32)
-        except:
+            # 尝试加载指定字体文件
+            if DEFAULT_FONT_PATH and os.path.exists(DEFAULT_FONT_PATH):
+                self.font = pygame.font.Font(DEFAULT_FONT_PATH, 24)
+                self.small_font = pygame.font.Font(DEFAULT_FONT_PATH, 16)
+                self.big_font = pygame.font.Font(DEFAULT_FONT_PATH, 32)
+                print(f"✅ Loaded custom font: {DEFAULT_FONT_PATH}")
+            else:
+                # 字体文件不存在，使用默认字体
+                self.font = pygame.font.Font(None, 24)
+                self.small_font = pygame.font.Font(None, 16)
+                self.big_font = pygame.font.Font(None, 32)
+                if DEFAULT_FONT_PATH:
+                    print(f"⚠️ Custom font not found: {DEFAULT_FONT_PATH}, using default font")
+                else:
+                    print("ℹ️ No custom font specified, using default font")
+        except Exception as e:
+            # 加载字体时出现异常，使用默认字体
             self.font = pygame.font.Font(None, 24)
             self.small_font = pygame.font.Font(None, 16)
             self.big_font = pygame.font.Font(None, 32)
+            print(f"⚠️ Error loading font: {e}, using default font")
         
         print(f"✨ PerfectGameClient initialized for {server_url}")
     
@@ -764,6 +784,25 @@ async def perfect_game_loop(client: PerfectGameClient):
 
 async def main():
     """主函数"""
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='Perfect Tank Game Client')
+    parser.add_argument('--server', '-s', type=str, 
+                       help='Server URL (e.g., ws://192.168.1.100:8765)')
+    parser.add_argument('--host', type=str, 
+                       help='Server host (e.g., 192.168.1.100)')
+    parser.add_argument('--port', '-p', type=int, 
+                       help='Server port (default: 8765)')
+    args = parser.parse_args()
+    
+    # 确定服务器URL
+    if args.server:
+        server_url = args.server
+    elif args.host:
+        port = args.port or SERVER_PORT
+        server_url = f"ws://{args.host}:{port}"
+    else:
+        server_url = DEFAULT_SERVER_URL
+    
     print("✨ Starting Perfect Tank Game Client...")
     print("=" * 50)
     print("🎯 Perfect Features:")
@@ -774,8 +813,10 @@ async def main():
     print("  • Smooth 60 FPS rendering")
     print("  • Event-driven input handling")
     print("=" * 50)
+    print(f"🌐 Connecting to server: {server_url}")
+    print("=" * 50)
     
-    client = PerfectGameClient()
+    client = PerfectGameClient(server_url)
     
     try:
         # 连接到服务器
@@ -786,6 +827,11 @@ async def main():
             await perfect_game_loop(client)
         else:
             print("❌ Failed to connect to server")
+            print("💡 Tips:")
+            print("  • Check if server is running")
+            print("  • Verify server IP address and port")
+            print("  • Check firewall settings")
+            print("  • Ensure both computers are on the same network")
     
     except KeyboardInterrupt:
         print("\n🛑 Client shutting down...")
