@@ -832,7 +832,26 @@ async def main():
         port = args.port or SERVER_PORT
         server_url = f"ws://{args.host}:{port}"
     else:
-        server_url = DEFAULT_SERVER_URL
+        # 智能默认连接：先扫描网络寻找服务器
+        print("🔍 No server specified, scanning for available servers...")
+        available_servers = scan_local_servers()
+        
+        if available_servers:
+            # 优先选择非本机的服务器
+            remote_servers = [s for s in available_servers if s != DEFAULT_LOCAL_IP]
+            if remote_servers:
+                chosen_server = remote_servers[0]
+                server_url = f"ws://{chosen_server}:{SERVER_PORT}"
+                print(f"🎯 Auto-selected remote server: {chosen_server}")
+            else:
+                # 只有本机服务器可用
+                server_url = f"ws://{available_servers[0]}:{SERVER_PORT}"
+                print(f"🏠 Auto-selected local server: {available_servers[0]}")
+        else:
+            # 没有找到服务器，使用本机IP作为fallback
+            server_url = DEFAULT_SERVER_URL
+            print(f"⚠️ No servers found, trying local server: {DEFAULT_LOCAL_IP}")
+            print("💡 If this fails, make sure server is running or use --host [SERVER_IP]")
     
     print("✨ Starting Perfect Tank Game Client...")
     print("=" * 50)
@@ -864,12 +883,29 @@ async def main():
             await perfect_game_loop(client)
         else:
             print("❌ Failed to connect to server")
-            print("💡 Tips:")
-            print("  • Check if server is running")
-            print("  • Verify server IP address and port")
-            print("  • Check firewall settings")
-            print("  • Ensure both computers are on the same network")
-            print("  • Try: python home/tank_game_client.py --scan")
+            print("=" * 50)
+            print("🔧 Troubleshooting Steps:")
+            print("1. 🔍 Scan for servers:")
+            print("   python home/tank_game_client.py --scan")
+            print()
+            print("2. 🌐 Connect to specific server:")
+            print("   python home/tank_game_client.py --host [SERVER_IP]")
+            print()
+            print("3. ✅ Common checks:")
+            print("   • Server is running on target machine")
+            print("   • Both computers on same network")
+            print("   • Firewall allows port 8765")
+            print("   • Use server's IP, not your own IP")
+            print()
+            if server_url == DEFAULT_SERVER_URL:
+                print("4. 💡 You're trying to connect to your own machine:")
+                print(f"   • Make sure server is running on {DEFAULT_LOCAL_IP}")
+                print("   • Or specify remote server with --host")
+            else:
+                print("4. 🎯 Connection target:")
+                print(f"   • Trying to connect to: {server_url}")
+                print("   • Make sure this is the correct server address")
+            print("=" * 50)
     
     except KeyboardInterrupt:
         print("\n🛑 Client shutting down...")
