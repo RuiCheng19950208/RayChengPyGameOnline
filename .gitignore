@@ -97,4 +97,5 @@ coverage.xml
 .pytest_cache/
 
 # Documentation builds
-docs/_build/ 
+docs/_build/ # Large font files
+assets/*.ttc
