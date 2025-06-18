@@ -656,7 +656,7 @@ class GameClient:
             local_player.update_position(dt)
     
     async def send_movement_if_changed(self):
-        """Smart send movement messages - only send when truly needed"""
+        """优化的移动消息发送 - 减少网络噪音"""
         current_time = time.time()
         
         if not self.connected or not self.player_id or self.player_id not in self.players:
@@ -669,27 +669,32 @@ class GameClient:
             for key in movement_keys
         )
         
-        # Check if position has significant change
+        # 更严格的位置变化检测
         current_player = self.players[self.player_id]
         position_changed = False
-        dx, dy = 0.0, 0.0  # Initialize variables
+        significant_position_change = False
+        dx, dy = 0.0, 0.0
         
         if hasattr(self, 'last_sent_position'):
             dx = abs(current_player.position['x'] - self.last_sent_position['x'])
             dy = abs(current_player.position['y'] - self.last_sent_position['y'])
             position_changed = (dx > self.position_change_threshold or 
                               dy > self.position_change_threshold)
+            significant_position_change = (dx > 15.0 or dy > 15.0)  # 显著位置变化
         else:
             position_changed = True  # First send
+            significant_position_change = True
         
-        # Periodic send (prevent packet loss) - increased interval
+        # 更保守的周期性发送
         time_since_last_send = current_time - self.last_movement_send
-        periodic_send = time_since_last_send > (self.movement_send_interval * 5)  # Force send every 5 cycles instead of 3
+        periodic_send = time_since_last_send > 0.2  # 增加到200ms间隔
         
-        # More conservative sending - only send on input changes or significant position changes
-        should_send = (input_changed or 
-                      (position_changed and time_since_last_send > self.movement_send_interval) or
-                      periodic_send)
+        # 只在真正需要时发送
+        should_send = (
+            input_changed or  # 输入变化（最高优先级）
+            (significant_position_change and time_since_last_send > 0.1) or  # 显著位置变化
+            (periodic_send and any(self.input_state[key] for key in movement_keys))  # 移动中的周期性发送
+        )
         
         if should_send:
             directions = {
@@ -699,8 +704,11 @@ class GameClient:
                 'd': self.input_state['d']
             }
             
-            # Use current player position
-            current_position = current_player.position.copy()
+            # 使用当前显示位置（而不是预测位置）
+            if hasattr(current_player, 'display_position'):
+                current_position = current_player.display_position.copy()
+            else:
+                current_position = current_player.position.copy()
             
             move_message = PlayerMoveMessage(
                 player_id=self.player_id,
@@ -714,25 +722,31 @@ class GameClient:
             self.last_input_state = self.input_state.copy()
             self.last_sent_position = current_position.copy()
             
-            # Reduced debug info
+            # 减少调试信息噪音
             if input_changed:
-                print(f"📤 Input changed: {directions}")
-            elif periodic_send:
-                print(f"📤 Periodic send (anti-packet-loss)")
+                moving_keys = [k for k, v in directions.items() if v]
+                if moving_keys:
+                    print(f"📤 Input: {moving_keys}")
+                else:
+                    print(f"📤 Input: stop")
     
     async def send_shoot(self):
-        """Send shoot message - use accurate player position"""
+        """发送射击消息 - 优化位置处理"""
         if not self.connected or not self.player_id or self.player_id not in self.players:
-            print(f"🚫 Cannot shoot: connected={self.connected}, player_id={self.player_id}, in_players={self.player_id in self.players if self.player_id else False}")
+            print(f"🚫 Cannot shoot: connected={self.connected}, player_id={self.player_id}")
             return
         
-        # Use current player's accurate position
-        player_pos = self.players[self.player_id].position
+        # 使用当前显示位置作为射击位置（更稳定）
+        current_player = self.players[self.player_id]
+        if hasattr(current_player, 'display_position'):
+            shoot_position = current_player.display_position.copy()
+        else:
+            shoot_position = current_player.position.copy()
         
         # Calculate shooting direction
         mouse_x, mouse_y = self.input_state['mouse_pos']
-        dx = mouse_x - player_pos['x']
-        dy = mouse_y - player_pos['y']
+        dx = mouse_x - shoot_position['x']
+        dy = mouse_y - shoot_position['y']
         
         # Normalize direction vector
         length = math.sqrt(dx * dx + dy * dy)
@@ -743,12 +757,12 @@ class GameClient:
         # Send shoot message
         shoot_message = PlayerShootMessage(
             player_id=self.player_id,
-            position=player_pos,  # Use accurate position
+            position=shoot_position,  # 使用稳定的显示位置
             direction={"x": dx, "y": dy},
             bullet_id=str(uuid.uuid4())
         )
         await self.send_message(shoot_message)
-        print(f"💥 Sent shoot message: pos=({player_pos['x']:.1f}, {player_pos['y']:.1f}), dir=({dx:.2f}, {dy:.2f})")
+        print(f"💥 Shoot: pos=({shoot_position['x']:.1f}, {shoot_position['y']:.1f})")
         
         # Reset click state
         self.input_state['mouse_clicked'] = False

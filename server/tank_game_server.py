@@ -575,7 +575,7 @@ class TankGameServer:
                 print(f"⚠️ Player {client_id} not found in any room for stop")
     
     async def handle_player_shoot(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerShootMessage):
-        """Handle player shooting"""
+        """Handle player shooting - 优化：射击不触发位置同步"""
         if client_id in self.players:
             player = self.players[client_id]
             
@@ -590,11 +590,15 @@ class TankGameServer:
                 print(f"⚠️ Player {client_id} not found in any room")
                 return
             
+            # 使用客户端提供的射击位置，不更新玩家位置
+            # 这避免了射击时的位置跳跃
+            shoot_position = message.position.copy()
+            
             # Create bullet - using new interface of shared entity class
             bullet_data = {
                 'bullet_id': message.bullet_id,
                 'owner_id': client_id,
-                'position': message.position,
+                'position': shoot_position,  # 使用射击位置，不是玩家当前位置
                 'velocity': {"x": message.direction["x"] * BULLET_SPEED, "y": message.direction["y"] * BULLET_SPEED},
                 'damage': 25
             }
@@ -610,7 +614,7 @@ class TankGameServer:
                 damage=bullet.damage
             )
             await self.broadcast_to_room(player_room.room_id, bullet_message)
-            print(f"💥 Player {client_id} fired bullet in room {player_room.room_id}")
+            print(f"💥 Player {client_id} fired bullet (no position sync)")
         else:
             print(f"⚠️ Player {client_id} not found for shooting")
     
@@ -843,11 +847,11 @@ class TankGameServer:
                     print(f"📡 Event {event.type} broadcasted to room {room_id}")
     
     async def game_loop(self):
-        """Main game loop - 增强的服务器权威位置同步"""
+        """Main game loop - 进一步优化位置同步频率"""
         target_fps = 60
         dt = 1.0 / target_fps
         
-        print(f"🎮 Game loop started at {target_fps} FPS (Server Authoritative Position)")
+        print(f"🎮 Game loop started at {target_fps} FPS (Optimized Smooth Sync)")
         
         while self.running:
             loop_start = time.time()
@@ -865,14 +869,19 @@ class TankGameServer:
                     if events:
                         await self.broadcast_events(room.room_id, events)
                     
-                    # 增加位置同步频率以确保一致性
+                    # 进一步减少位置同步频率，只在真正需要时同步
                     if room.room_state == "playing":
-                        # 游戏中：每10帧同步一次位置（每秒6次）
-                        if room.frame_id % 10 == 0:
-                            await self._broadcast_authoritative_positions(room)
+                        # 游戏中：每20帧同步一次位置（每秒3次）
+                        if room.frame_id % 20 == 0:
+                            # 只有当有玩家移动时才同步
+                            has_moving_players = any(
+                                any(p.moving_directions.values()) for p in room.players.values()
+                            )
+                            if has_moving_players:
+                                await self._broadcast_authoritative_positions(room)
                     else:
-                        # 等待状态：每60帧同步一次
-                        if room.frame_id % 60 == 0:
+                        # 等待状态：每90帧同步一次（每1.5秒）
+                        if room.frame_id % 90 == 0:
                             state_update = room.get_state_if_changed()
                             if state_update:
                                 await self.broadcast_to_room(room.room_id, state_update)
@@ -883,38 +892,52 @@ class TankGameServer:
             await asyncio.sleep(sleep_time)
     
     def _update_all_players_positions(self, room, dt: float):
-        """更新房间内所有玩家的位置（服务器权威）"""
+        """更新房间内所有玩家的位置（服务器权威） - 优化版本"""
         current_time = time.time()
         
         for player in room.players.values():
-            # 只更新正在移动的玩家
+            # 只更新正在移动的玩家（减少不必要的计算）
             if any(player.moving_directions.values()):
                 # 计算自上次更新以来的时间
                 actual_dt = current_time - player.last_update
-                if actual_dt > 0.001:  # 避免过小的dt
+                if actual_dt > 0.005:  # 最小更新间隔5ms（减少过于频繁的更新）
                     if actual_dt > 0.1:  # 限制最大dt
                         actual_dt = 0.1
                     
+                    # 保存旧位置用于检测显著变化
+                    old_pos = player.position.copy()
+                    
                     self._update_player_position_server_authoritative(player, actual_dt)
                     player.last_update = current_time
+                    
+                    # 如果位置变化很小，标记为稳定（减少网络流量）
+                    dx = player.position["x"] - old_pos["x"]
+                    dy = player.position["y"] - old_pos["y"]
+                    change = (dx * dx + dy * dy) ** 0.5
+                    
+                    # 标记显著位置变化（用于选择性同步）
+                    player.significant_position_change = change > 2.0  # 2像素以上才认为是显著变化
     
     async def _broadcast_authoritative_positions(self, room):
-        """广播服务器权威位置"""
-        # 创建权威位置更新消息
-        position_updates = []
+        """广播服务器权威位置 - 选择性同步"""
+        # 只同步有显著位置变化或正在移动的玩家
+        players_to_sync = []
         
         for player in room.players.values():
-            position_update = {
-                'player_id': player.player_id,
-                'position': player.position.copy(),
-                'moving_directions': player.moving_directions.copy(),
-                'timestamp': time.time()
-            }
-            position_updates.append(position_update)
+            should_sync = (
+                any(player.moving_directions.values()) or  # 正在移动
+                getattr(player, 'significant_position_change', True)  # 有显著位置变化
+            )
+            
+            if should_sync:
+                players_to_sync.append(player)
         
-        # 使用GameStateUpdate消息广播
+        if not players_to_sync:
+            return  # 没有需要同步的玩家
+        
+        # 使用GameStateUpdate消息广播（只包含需要同步的玩家）
         authoritative_state = GameStateUpdateMessage(
-            players=[p.to_dict() for p in room.players.values()],
+            players=[p.to_dict() for p in players_to_sync],  # 只同步需要的玩家
             bullets=[b.to_dict() for b in room.bullets.values()],
             game_time=room.game_time,
             frame_id=room.frame_id
@@ -923,8 +946,9 @@ class TankGameServer:
         await self.broadcast_to_room(room.room_id, authoritative_state)
         
         # 调试信息
-        moving_count = sum(1 for p in room.players.values() if any(p.moving_directions.values()))
-        print(f"🔄 Authoritative position sync: {moving_count}/{len(room.players)} players moving")
+        moving_count = len(players_to_sync)
+        total_count = len(room.players)
+        print(f"🔄 Selective position sync: {moving_count}/{total_count} players")
 
 
 async def main():

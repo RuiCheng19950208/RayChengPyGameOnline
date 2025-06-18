@@ -55,17 +55,23 @@ class Player:
         if not websocket:
             self.last_server_sync = time.time()
             
-            # 平滑插值系统
+            # 优化的平滑插值系统
             self.server_position = {"x": 0.0, "y": 0.0}  # 服务器权威位置
             self.display_position = {"x": 0.0, "y": 0.0}  # 实际显示位置（插值后）
             self.interpolation_target = {"x": 0.0, "y": 0.0}  # 插值目标位置
-            self.interpolation_speed = 8.0  # 插值速度（每秒像素）
+            self.interpolation_speed = 12.0  # 插值速度系数（提高响应性）
             self.prediction_enabled = True  # 是否启用本地预测
             
-            # 权威位置系统
+            # 优化的权威位置系统
             self.last_server_update = 0.0
-            self.server_sync_threshold = 0.1  # 同步阈值时间
-            self.position_correction_threshold = 30.0  # 位置校正阈值（像素）
+            self.server_sync_threshold = 0.15  # 同步阈值时间（增加容忍度）
+            self.position_correction_threshold = 50.0  # 位置校正阈值（增加到50px）
+            self.minor_correction_threshold = 15.0  # 小幅校正阈值
+            
+            # 稳定性控制
+            self.correction_dampening = 0.3  # 校正阻尼系数
+            self.prediction_weight_max = 0.6  # 最大预测权重
+            self.stable_threshold = 3.0  # 稳定阈值（像素）
             
             # 初始化显示位置
             self.server_position = self.position.copy()
@@ -73,10 +79,11 @@ class Player:
             self.interpolation_target = self.position.copy()
     
     def update_from_server_authoritative(self, server_data: Dict[str, float], directions: Dict[str, bool] = None):
-        """从服务器权威位置更新 - 带平滑插值"""
+        """从服务器权威位置更新 - 优化的平滑插值"""
         current_time = time.time()
         
         # 更新服务器权威位置
+        old_server_position = self.server_position.copy()
         self.server_position = server_data.copy()
         self.last_server_update = current_time
         
@@ -89,48 +96,70 @@ class Player:
         dy = self.server_position["y"] - self.display_position["y"]
         distance = (dx * dx + dy * dy) ** 0.5
         
-        if distance > self.position_correction_threshold:
-            # 差异过大，立即跳跃到服务器位置
+        # 计算服务器位置变化（检测大幅跳跃）
+        server_dx = self.server_position["x"] - old_server_position["x"]
+        server_dy = self.server_position["y"] - old_server_position["y"]
+        server_change = (server_dx * server_dx + server_dy * server_dy) ** 0.5
+        
+        if distance > self.position_correction_threshold or server_change > 100.0:
+            # 差异过大或服务器位置大幅跳跃，立即校正
             self.display_position = self.server_position.copy()
             self.interpolation_target = self.server_position.copy()
             self.position = self.display_position.copy()
-            print(f"🔧 Major correction for {self.name}: {distance:.1f}px (instant)")
-        else:
-            # 设置插值目标
+            print(f"🔧 Major correction: {distance:.1f}px (instant)")
+        elif distance > self.stable_threshold:
+            # 需要平滑校正
             self.interpolation_target = self.server_position.copy()
-            print(f"🎯 Smooth interpolation for {self.name}: {distance:.1f}px")
+            print(f"🎯 Smooth correction: {distance:.1f}px")
+        else:
+            # 位置很接近，小幅调整目标
+            self.interpolation_target = self.server_position.copy()
     
     def update_display_position(self, dt: float):
-        """更新显示位置 - 平滑插值和本地预测"""
+        """更新显示位置 - 优化的平滑插值和预测"""
         current_time = time.time()
         
         # 检查是否需要本地预测
         time_since_server_update = current_time - self.last_server_update
+        is_moving = any(self.moving_directions.values())
         should_predict = (self.prediction_enabled and 
-                         time_since_server_update < 1.0 and  # 服务器数据不能太旧
-                         any(self.moving_directions.values()))  # 正在移动
+                         time_since_server_update < 1.5 and  # 增加预测时间窗口
+                         is_moving)
         
         if should_predict:
-            # 本地预测：基于移动方向和速度预测位置
-            predicted_position = self._predict_position(dt)
+            # 优化的本地预测
+            predicted_position = self._predict_position_optimized(dt, time_since_server_update)
             
-            # 混合预测位置和插值目标
-            blend_factor = min(time_since_server_update * 2.0, 0.7)  # 随时间增加预测权重
+            # 动态调整预测权重（根据延迟和移动状态）
+            max_weight = self.prediction_weight_max
+            weight_factor = min(time_since_server_update / 0.5, 1.0)  # 0.5秒内权重逐渐增加
+            blend_factor = max_weight * weight_factor
             
-            self.interpolation_target["x"] = (1 - blend_factor) * self.server_position["x"] + blend_factor * predicted_position["x"]
-            self.interpolation_target["y"] = (1 - blend_factor) * self.server_position["y"] + blend_factor * predicted_position["y"]
+            # 计算到服务器位置的距离，距离越大预测权重越小
+            dx = self.server_position["x"] - self.display_position["x"]
+            dy = self.server_position["y"] - self.display_position["y"]
+            distance = (dx * dx + dy * dy) ** 0.5
+            
+            if distance > self.minor_correction_threshold:
+                blend_factor *= 0.5  # 距离大时减少预测权重
+            
+            # 混合预测位置和服务器位置
+            target_x = (1 - blend_factor) * self.server_position["x"] + blend_factor * predicted_position["x"]
+            target_y = (1 - blend_factor) * self.server_position["y"] + blend_factor * predicted_position["y"]
+            
+            self.interpolation_target = {"x": target_x, "y": target_y}
         else:
             # 不预测，直接使用服务器位置作为目标
             self.interpolation_target = self.server_position.copy()
         
-        # 平滑插值到目标位置
-        self._smooth_interpolate_to_target(dt)
+        # 优化的平滑插值
+        self._smooth_interpolate_optimized(dt)
         
         # 更新实际位置为显示位置
         self.position = self.display_position.copy()
     
-    def _predict_position(self, dt: float) -> Dict[str, float]:
-        """基于移动方向进行位置预测"""
+    def _predict_position_optimized(self, dt: float, time_since_update: float) -> Dict[str, float]:
+        """优化的位置预测 - 考虑延迟和加速度"""
         speed = TANK_SPEED
         predicted_pos = self.server_position.copy()
         
@@ -145,9 +174,12 @@ class Player:
         if self.moving_directions["d"]:
             velocity["x"] += speed
         
+        # 预测时间 = 单帧时间 + 部分网络延迟补偿
+        prediction_time = dt + min(time_since_update * 0.3, 0.1)  # 最多补偿100ms
+        
         # 应用预测
-        predicted_pos["x"] += velocity["x"] * dt
-        predicted_pos["y"] += velocity["y"] * dt
+        predicted_pos["x"] += velocity["x"] * prediction_time
+        predicted_pos["y"] += velocity["y"] * prediction_time
         
         # 边界检查
         predicted_pos["x"] = max(0, min(SCREEN_WIDTH, predicted_pos["x"]))
@@ -155,21 +187,33 @@ class Player:
         
         return predicted_pos
     
-    def _smooth_interpolate_to_target(self, dt: float):
-        """平滑插值到目标位置"""
+    def _smooth_interpolate_optimized(self, dt: float):
+        """优化的平滑插值 - 减少颤动"""
         # 计算到目标位置的距离
         dx = self.interpolation_target["x"] - self.display_position["x"]
         dy = self.interpolation_target["y"] - self.display_position["y"]
         distance = (dx * dx + dy * dy) ** 0.5
         
-        if distance < 1.0:
-            # 距离很小，直接到达目标
+        if distance < 0.5:
+            # 距离很小，直接到达目标（减少微小抖动）
             self.display_position = self.interpolation_target.copy()
         else:
-            # 计算插值速度
-            move_distance = self.interpolation_speed * distance * dt
-            if move_distance > distance:
-                move_distance = distance
+            # 动态插值速度：距离越大速度越快
+            base_speed = self.interpolation_speed
+            if distance > self.minor_correction_threshold:
+                # 大距离时提高速度
+                dynamic_speed = base_speed * (1.0 + distance / 50.0)
+            else:
+                # 小距离时降低速度（更平滑）
+                dynamic_speed = base_speed * 0.6
+            
+            # 应用阻尼系数
+            move_distance = dynamic_speed * distance * dt * self.correction_dampening
+            
+            # 限制最大移动距离（防止过度校正）
+            max_move = min(distance, 200.0 * dt)  # 每秒最多移动200像素
+            if move_distance > max_move:
+                move_distance = max_move
             
             # 移动方向单位向量
             if distance > 0:
