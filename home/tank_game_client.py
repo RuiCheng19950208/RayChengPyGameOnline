@@ -28,9 +28,11 @@ import argparse
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'shared'))
 
 from tank_game_messages import *
+# 导入共享的实体类
+from tank_game_entities import Player, Bullet
 
-# 加载环境变量
-load_dotenv()
+# 加载环境变量 - 使用项目根目录的共享 .env 文件
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 def get_local_ip():
     """获取本机IP地址"""
@@ -79,105 +81,6 @@ COLORS = {
     'ORANGE': (255, 165, 0),
 }
 
-class PlayerState:
-    """完美玩家状态类 - 单一位置源"""
-    
-    def __init__(self, player_data: Dict):
-        self.player_id = player_data['player_id']
-        self.name = player_data['name']
-        self.health = player_data.get('health', 100)
-        self.max_health = player_data.get('max_health', 100)
-        self.is_alive = player_data.get('is_alive', True)
-        
-        # 单一位置系统 - 消除多层位置冲突
-        self.position = player_data['position'].copy()  # 唯一的位置
-        self.moving_directions = {"w": False, "a": False, "s": False, "d": False}
-        self.last_update = time.time()
-        
-        # 服务器同步
-        self.last_server_sync = time.time()
-        self.server_sync_threshold = 100.0  # 只有差异很大时才校正
-    
-    def update_from_server(self, position: Dict[str, float], directions: Dict[str, bool] = None):
-        """从服务器更新状态 - 更温和的校正"""
-        if directions:
-            self.moving_directions = directions.copy()
-        
-        # 计算位置差异
-        dx = position["x"] - self.position["x"]
-        dy = position["y"] - self.position["y"]
-        distance = math.sqrt(dx * dx + dy * dy)
-        
-        # 大幅提高校正阈值，只有在极大差异时才校正
-        correction_threshold = 200.0  # 从100提高到200
-        
-        # 如果正在移动，进一步提高阈值
-        is_moving = any(self.moving_directions.values())
-        if is_moving:
-            correction_threshold = 300.0
-        
-        # 只有在差异极大时才进行校正
-        if distance > correction_threshold:
-            print(f"🔧 Major server correction for {self.name}: {distance:.1f}px")
-            # 平滑校正而不是直接跳跃
-            blend_factor = 0.3  # 30% 服务器位置，70% 客户端位置
-            self.position["x"] = self.position["x"] + (dx * blend_factor)
-            self.position["y"] = self.position["y"] + (dy * blend_factor)
-        elif distance > 50.0:  # 中等差异，记录但不校正
-            print(f"📊 Position drift: {distance:.1f}px (within tolerance)")
-        
-        self.last_server_sync = time.time()
-    
-    def update_position(self, dt: float):
-        """更新位置 - 与服务器完全相同的算法"""
-        speed = TANK_SPEED
-        velocity = {"x": 0.0, "y": 0.0}
-        
-        # 根据按键状态计算速度
-        if self.moving_directions["w"]:
-            velocity["y"] -= speed
-        if self.moving_directions["s"]:
-            velocity["y"] += speed
-        if self.moving_directions["a"]:
-            velocity["x"] -= speed
-        if self.moving_directions["d"]:
-            velocity["x"] += speed
-        
-        # 更新位置
-        self.position["x"] += velocity["x"] * dt
-        self.position["y"] += velocity["y"] * dt
-        
-        # 边界检查
-        self.position["x"] = max(0, min(SCREEN_WIDTH, self.position["x"]))
-        self.position["y"] = max(0, min(SCREEN_HEIGHT, self.position["y"]))
-        
-        self.last_update = time.time()
-
-class BulletState:
-    """完美子弹状态类"""
-    
-    def __init__(self, bullet_data: Dict):
-        self.bullet_id = bullet_data['bullet_id']
-        self.owner_id = bullet_data['owner_id']
-        self.position = bullet_data['position'].copy()
-        self.velocity = bullet_data['velocity'].copy()
-        self.damage = bullet_data['damage']
-        self.created_time = bullet_data.get('created_time', time.time())
-        self.max_lifetime = 5.0
-    
-    def update(self, dt: float) -> bool:
-        """更新子弹位置"""
-        self.position["x"] += self.velocity["x"] * dt
-        self.position["y"] += self.velocity["y"] * dt
-        
-        # 检查边界和生命周期
-        if (self.position["x"] < 0 or self.position["x"] > SCREEN_WIDTH or
-            self.position["y"] < 0 or self.position["y"] > SCREEN_HEIGHT or
-            time.time() - self.created_time > self.max_lifetime):
-            return False
-        
-        return True
-
 class GameClient:
     """完美游戏客户端"""
     
@@ -192,8 +95,8 @@ class GameClient:
         self.player_name = f"PerfectPlayer_{int(time.time()) % 10000}"
         
         # 游戏状态
-        self.players: Dict[str, PlayerState] = {}
-        self.bullets: Dict[str, BulletState] = {}
+        self.players: Dict[str, Player] = {}
+        self.bullets: Dict[str, Bullet] = {}
         
         # 输入状态 - 简化的按键状态机
         self.input_state = {
@@ -352,7 +255,7 @@ class GameClient:
                 self.players[player_id].is_alive = player_data.get('is_alive', True)
             else:
                 # 新玩家
-                new_player = PlayerState(player_data)
+                new_player = Player(player_data)
                 self.players[player_id] = new_player
                 
                 if player_id == self.player_id:
@@ -364,7 +267,7 @@ class GameClient:
         # 添加新子弹
         for bullet_id, bullet_data in server_bullets.items():
             if bullet_id not in self.bullets:
-                self.bullets[bullet_id] = BulletState(bullet_data)
+                self.bullets[bullet_id] = Bullet(bullet_data)
         
         # 移除服务器上不存在的子弹
         bullets_to_remove = []
@@ -400,7 +303,7 @@ class GameClient:
             'damage': message.damage,
             'created_time': time.time()
         }
-        self.bullets[message.bullet_id] = BulletState(bullet_data)
+        self.bullets[message.bullet_id] = Bullet(bullet_data)
     
     async def handle_collision(self, message: CollisionMessage):
         """处理碰撞事件"""

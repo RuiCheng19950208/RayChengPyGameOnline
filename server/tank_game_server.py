@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-坦克游戏服务器 - 基于 Kable 项目的消息驱动架构
-
 实现 WebSocket 服务器，处理所有游戏消息，管理游戏状态
 """
 
@@ -32,8 +30,11 @@ from tank_game_messages import (
     BulletDestroyedMessage, CollisionMessage, PlayerDeathMessage
 )
 
-# 加载环境变量
-load_dotenv()
+# 导入共享的实体类
+from tank_game_entities import Player, Bullet
+
+# 加载环境变量 - 使用项目根目录的共享 .env 文件
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 # 游戏配置 - 与客户端保持一致
 SCREEN_WIDTH = int(os.getenv('SCREEN_WIDTH', 800))
@@ -44,8 +45,8 @@ BULLET_SPEED = int(os.getenv('BULLET_SPEED', 300))
 BULLET_DAMAGE = int(os.getenv('BULLET_DAMAGE', 25))
 BULLET_LIFETIME = float(os.getenv('BULLET_LIFETIME', 5.0))
 
-# 服务器配置
-SERVER_HOST = os.getenv('SERVER_HOST', 'localhost')
+
+SERVER_HOST = '0.0.0.0'  # 默认监听所有接口
 SERVER_PORT = int(os.getenv('SERVER_PORT', 8765))
 MAX_PLAYERS_PER_ROOM = int(os.getenv('MAX_PLAYERS_PER_ROOM', 8))
 
@@ -112,10 +113,6 @@ def display_server_info(host: str, port: int):
         print(f"🌐 Local IP: {local_ip}")
         print(f"🔌 Port: {port}")
         print()
-        print("📱 Client Connection Info:")
-        print(f"   • Same computer: ws://localhost:{port}")
-        print(f"   • Other computers: ws://{local_ip}:{port}")
-        print()
         print("💻 Client Commands:")
         print(f"   • Local: python home/tank_game_client.py")
         print(f"   • Remote: python home/tank_game_client.py --host {local_ip}")
@@ -128,77 +125,6 @@ def display_server_info(host: str, port: int):
     print()
     print("🔥 Ready for battle! Waiting for players...")
     print("=" * 60)
-
-class Player:
-    """玩家数据类"""
-    
-    def __init__(self, player_id: str, name: str, websocket: WebSocketServerProtocol):
-        self.player_id = player_id
-        self.name = name
-        self.websocket = websocket
-        self.position = {"x": SCREEN_WIDTH/2, "y": SCREEN_HEIGHT/2}  # 使用环境变量
-        self.velocity = {"x": 0.0, "y": 0.0}
-        self.rotation = 0.0
-        self.health = 100
-        self.max_health = 100
-        self.is_alive = True
-        self.moving_directions = {"w": False, "a": False, "s": False, "d": False}
-        self.last_update = time.time()
-        self.last_client_update = time.time()  # 客户端最后更新时间
-        self.use_client_position = True  # 是否使用客户端位置
-        
-    def to_dict(self) -> Dict:
-        """转换为字典"""
-        return {
-            "player_id": self.player_id,
-            "name": self.name,
-            "position": self.position,
-            "velocity": self.velocity,
-            "rotation": self.rotation,
-            "health": self.health,
-            "max_health": self.max_health,
-            "is_alive": self.is_alive,
-            "moving_directions": self.moving_directions
-        }
-
-
-class Bullet:
-    """子弹数据类"""
-    
-    def __init__(self, bullet_id: str, owner_id: str, position: Dict[str, float], 
-                 velocity: Dict[str, float], damage: int = None):
-        self.bullet_id = bullet_id
-        self.owner_id = owner_id
-        self.position = position.copy()
-        self.velocity = velocity.copy()
-        self.damage = damage if damage is not None else BULLET_DAMAGE
-        self.created_time = time.time()
-        self.max_lifetime = BULLET_LIFETIME
-        
-    def update(self, dt: float) -> bool:
-        """更新子弹位置，返回是否仍然有效"""
-        self.position["x"] += self.velocity["x"] * dt
-        self.position["y"] += self.velocity["y"] * dt
-        
-        # 检查是否超出边界或超时
-        if (self.position["x"] < 0 or self.position["x"] > SCREEN_WIDTH or
-            self.position["y"] < 0 or self.position["y"] > SCREEN_HEIGHT or
-            time.time() - self.created_time > self.max_lifetime):
-            return False
-        
-        return True
-        
-    def to_dict(self) -> Dict:
-        """转换为字典"""
-        return {
-            "bullet_id": self.bullet_id,
-            "owner_id": self.owner_id,
-            "position": self.position,
-            "velocity": self.velocity,
-            "damage": self.damage,
-            "created_time": self.created_time
-        }
-
 
 class GameRoom:
     """游戏房间"""
@@ -402,7 +328,6 @@ class GameRoom:
 
 class TankGameServer:
     """坦克游戏服务器"""
-    
     def __init__(self, host: str = None, port: int = None):
         self.host = host if host is not None else SERVER_HOST
         self.port = port if port is not None else SERVER_PORT
@@ -529,8 +454,12 @@ class TankGameServer:
     
     async def handle_player_join(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerJoinMessage):
         """处理玩家加入"""
-        # 创建玩家
-        player = Player(client_id, message.player_name, websocket)
+        # 创建玩家 - 使用共享实体类的新接口
+        player_data = {
+            'player_id': client_id,
+            'name': message.player_name
+        }
+        player = Player(player_data, websocket)
         self.players[client_id] = player
         
         # 加入默认房间
@@ -598,14 +527,15 @@ class TankGameServer:
             player = self.players[client_id]
             room = self.rooms[self.default_room_id]
             
-            # 创建子弹
-            bullet = Bullet(
-                bullet_id=message.bullet_id,
-                owner_id=client_id,
-                position=message.position,
-                velocity={"x": message.direction["x"] * BULLET_SPEED, "y": message.direction["y"] * BULLET_SPEED},
-                damage=25
-            )
+            # 创建子弹 - 使用共享实体类的新接口
+            bullet_data = {
+                'bullet_id': message.bullet_id,
+                'owner_id': client_id,
+                'position': message.position,
+                'velocity': {"x": message.direction["x"] * BULLET_SPEED, "y": message.direction["y"] * BULLET_SPEED},
+                'damage': 25
+            }
+            bullet = Bullet(bullet_data)
             room.add_bullet(bullet)
             
             # 立即广播子弹发射消息（事件驱动）
