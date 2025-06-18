@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-具体游戏状态实现
+Specific game state implementations
 
-包含主菜单、房间大厅、服务器浏览器和游戏中的状态实现
+Contains main menu, room lobby, server browser and in-game state implementations
 """
 
 import pygame
@@ -17,7 +17,7 @@ from tank_game_messages import *
 
 
 class MainMenuState(GameState):
-    """主菜单状态"""
+    """Main menu state"""
     
     def __init__(self, state_manager):
         super().__init__(state_manager)
@@ -28,19 +28,19 @@ class MainMenuState(GameState):
         self.button_font = None
         
     def enter(self, previous_state=None, **kwargs):
-        """进入主菜单"""
+        """Enter main menu"""
         if not self.initialized:
             self._initialize_ui()
             self.initialized = True
         print("🏠 Entered Main Menu")
     
     def exit(self, next_state=None):
-        """离开主菜单"""
+        """Leave main menu"""
         pass
     
     def _initialize_ui(self):
-        """初始化UI组件"""
-        # 创建字体
+        """Initialize UI components"""
+        # Create fonts
         try:
             self.title_font = pygame.font.Font(None, 72)
             self.button_font = pygame.font.Font(None, 36)
@@ -48,7 +48,7 @@ class MainMenuState(GameState):
             self.title_font = pygame.font.Font(None, 72)
             self.button_font = pygame.font.Font(None, 36)
         
-        # 创建按钮
+        # Create buttons
         button_width = 250
         button_height = 60
         button_spacing = 20
@@ -56,7 +56,7 @@ class MainMenuState(GameState):
         
         center_x = self.screen_width // 2 - button_width // 2
         
-        # Create a Game 按钮
+        # Create a Game button
         create_button = Button(
             center_x, start_y,
             button_width, button_height,
@@ -65,7 +65,7 @@ class MainMenuState(GameState):
             self._on_create_game
         )
         
-        # Join a Game 按钮
+        # Join a Game button
         join_button = Button(
             center_x, start_y + button_height + button_spacing,
             button_width, button_height,
@@ -74,7 +74,7 @@ class MainMenuState(GameState):
             self._on_join_game
         )
         
-        # Exit 按钮
+        # Exit button
         exit_button = Button(
             center_x, start_y + 2 * (button_height + button_spacing),
             button_width, button_height,
@@ -86,10 +86,10 @@ class MainMenuState(GameState):
         self.buttons = [create_button, join_button, exit_button]
     
     def _on_create_game(self):
-        """创建游戏"""
+        """Create game"""
         print("🎮 Creating new game...")
         
-        # 生成唯一的房间ID
+        # Generate unique room ID
         import uuid
         room_id = f"room_{int(time.time())}_{str(uuid.uuid4())[:8]}"
         room_name = f"Game Room {int(time.time()) % 10000}"
@@ -104,48 +104,48 @@ class MainMenuState(GameState):
         )
     
     def _on_join_game(self):
-        """加入游戏"""
+        """Join game"""
         print("🔍 Looking for games...")
         self.state_manager.change_state(GameStateType.SERVER_BROWSER)
     
     def _on_exit(self):
-        """退出游戏"""
+        """Exit game"""
         print("👋 Exiting game...")
         pygame.event.post(pygame.event.Event(pygame.QUIT))
     
     def update(self, dt: float):
-        """更新主菜单"""
+        """Update main menu"""
         pass
     
     def handle_event(self, event: pygame.event.Event) -> bool:
-        """处理事件"""
+        """Handle events"""
         for button in self.buttons:
             if button.handle_event(event):
                 return True
         return False
     
     def render(self, surface: pygame.Surface):
-        """渲染主菜单"""
-        # 清屏
+        """Render main menu"""
+        # Clear screen
         surface.fill((20, 20, 30))
         
-        # 绘制标题
+        # Draw title
         title_text = self.title_font.render("TANK WARS", True, (255, 255, 255))
         title_rect = title_text.get_rect(center=(self.screen_width // 2, 200))
         surface.blit(title_text, title_rect)
         
-        # 绘制副标题
+        # Draw subtitle
         subtitle_text = self.button_font.render("Multiplayer Tank Battle", True, (200, 200, 200))
         subtitle_rect = subtitle_text.get_rect(center=(self.screen_width // 2, 250))
         surface.blit(subtitle_text, subtitle_rect)
         
-        # 绘制按钮
+        # Draw buttons
         for button in self.buttons:
             button.draw(surface)
 
 
 class ServerBrowserState(GameState):
-    """服务器浏览器状态 - 现在显示房间列表"""
+    """Server browser state - now displays room list"""
     
     def __init__(self, state_manager):
         super().__init__(state_manager)
@@ -159,21 +159,21 @@ class ServerBrowserState(GameState):
         self.status_text = "Click Refresh to scan for rooms"
         
     def enter(self, previous_state=None, **kwargs):
-        """进入服务器浏览器"""
+        """Enter server browser"""
         if not self.initialized:
             self._initialize_ui()
             self.initialized = True
         
-        # 自动开始扫描
+        # Auto-start scanning
         self._start_scan()
         print("🔍 Entered Room Browser")
     
     def exit(self, next_state=None):
-        """离开服务器浏览器"""
+        """Leave server browser"""
         pass
     
     def _initialize_ui(self):
-        """初始化UI"""
+        """Initialize UI"""
         try:
             self.font = pygame.font.Font(None, 24)
             self.title_font = pygame.font.Font(None, 36)
@@ -181,14 +181,14 @@ class ServerBrowserState(GameState):
             self.font = pygame.font.Font(None, 24)
             self.title_font = pygame.font.Font(None, 36)
         
-        # Back 按钮
+        # Back button
         self.back_button = Button(
             50, 50, 100, 40,
             "Back", self.font,
             self._on_back
         )
         
-        # Refresh 按钮
+        # Refresh button
         self.refresh_button = Button(
             200, 50, 100, 40,
             "Refresh", self.font,
@@ -196,7 +196,7 @@ class ServerBrowserState(GameState):
         )
     
     def _start_scan(self):
-        """开始扫描房间"""
+        """Start scanning for rooms"""
         if self.scanning:
             return
         
@@ -205,11 +205,11 @@ class ServerBrowserState(GameState):
         self.rooms = []
         self.room_buttons = []
         
-        # 异步扫描
+        # Async scan
         asyncio.create_task(self._scan_rooms())
     
     async def _scan_rooms(self):
-        """扫描可用房间"""
+        """Scan available rooms"""
         try:
             client = self.state_manager.client_ref
             if not client or not client.connected:
@@ -217,15 +217,15 @@ class ServerBrowserState(GameState):
                 self.scanning = False
                 return
             
-            # 请求房间列表
+            # Request room list
             from tank_game_messages import RoomListRequestMessage
             list_request = RoomListRequestMessage(client_id=client.client_id)
             await client.send_message(list_request)
             
-            # 等待响应
-            await asyncio.sleep(1.0)  # 给服务器时间响应
+            # Wait for response
+            await asyncio.sleep(1.0)  # Give server time to respond
             
-            # 检查是否收到房间列表
+            # Check if room list was received
             if hasattr(client, 'room_list') and client.room_list:
                 self.rooms = client.room_list
                 self._create_room_buttons()
@@ -245,7 +245,7 @@ class ServerBrowserState(GameState):
             self.scanning = False
     
     def _create_room_buttons(self):
-        """创建房间按钮"""
+        """Create room buttons"""
         self.room_buttons = []
         start_y = 150
         button_height = 60
@@ -254,7 +254,7 @@ class ServerBrowserState(GameState):
         for i, room in enumerate(self.rooms):
             y = start_y + i * (button_height + button_spacing)
             
-            # 房间信息文本
+            # Room info text
             room_text = f"🏠 {room['name']} (ID: {room['room_id']}) - {room['current_players']}/{room['max_players']} players"
             if room.get('room_state') == 'playing':
                 room_text += " [IN GAME]"
@@ -267,7 +267,7 @@ class ServerBrowserState(GameState):
             self.room_buttons.append(button)
     
     def _join_room(self, room_info):
-        """加入房间"""
+        """Join room"""
         if room_info.get('room_state') == 'playing':
             print("⚠️ Cannot join room - game in progress")
             return
@@ -282,15 +282,15 @@ class ServerBrowserState(GameState):
         )
     
     def _on_back(self):
-        """返回主菜单"""
+        """Return to main menu"""
         self.state_manager.change_state(GameStateType.MAIN_MENU)
     
     def update(self, dt: float):
-        """更新服务器浏览器"""
+        """Update server browser"""
         pass
     
     def handle_event(self, event: pygame.event.Event) -> bool:
-        """处理事件"""
+        """Handle events"""
         if self.back_button.handle_event(event):
             return True
         if self.refresh_button.handle_event(event):
@@ -303,26 +303,26 @@ class ServerBrowserState(GameState):
         return False
     
     def render(self, surface: pygame.Surface):
-        """渲染服务器浏览器"""
+        """Render server browser"""
         surface.fill((25, 25, 35))
         
-        # 标题
+        # Title
         title_text = self.title_font.render("Available Rooms", True, (255, 255, 255))
         surface.blit(title_text, (50, 10))
         
-        # 状态文本
+        # Status text
         status_surface = self.font.render(self.status_text, True, (200, 200, 200))
         surface.blit(status_surface, (50, 110))
         
-        # 按钮
+        # Buttons
         self.back_button.draw(surface)
         self.refresh_button.draw(surface)
         
-        # 房间列表
+        # Room list
         for button in self.room_buttons:
             button.draw(surface)
         
-        # 扫描指示器
+        # Scanning indicator
         if self.scanning:
             dots = "." * ((int(time.time() * 3) % 3) + 1)
             scan_text = self.font.render(f"Scanning{dots}", True, (100, 255, 100))
@@ -330,7 +330,7 @@ class ServerBrowserState(GameState):
 
 
 class RoomLobbyState(GameState):
-    """房间大厅状态"""
+    """Room lobby state"""
     
     def __init__(self, state_manager):
         super().__init__(state_manager)
@@ -340,12 +340,12 @@ class RoomLobbyState(GameState):
         self.current_room: Optional[GameRoom] = None
         self.player_slots: List[PlayerSlot] = []
         self.buttons = []
-        self.client = None  # 游戏客户端引用
+        self.client = None  # Game client reference
         self.room_id = "default"
         self.room_name = "Game Room"
         
     def enter(self, previous_state=None, **kwargs):
-        """进入房间大厅"""
+        """Enter room lobby"""
         self.is_host = kwargs.get('is_host', False)
         self.room_id = kwargs.get('room_id', 'default')
         self.room_name = kwargs.get('room_name', 'Game Room')
@@ -356,28 +356,28 @@ class RoomLobbyState(GameState):
             self._initialize_ui()
             self.initialized = True
         
-        # 更新按钮状态
+        # Update button states
         self._update_button_states()
         
-        # 如果客户端已连接，直接处理房间逻辑
+        # If client is already connected, handle room logic directly
         if self.client and self.client.connected:
             if self.is_host:
-                # 房主创建房间
+                # Host creates room
                 print(f"🔗 Host creating room: {self.room_name}")
                 asyncio.create_task(self._create_room())
             else:
-                # 加入者加入现有房间
+                # Joiner joins existing room
                 print(f"🔗 Joining existing room: {self.room_id}")
                 asyncio.create_task(self._join_room())
         else:
             print("⚠️ No client connection available")
     
     def exit(self, next_state=None):
-        """离开房间大厅"""
+        """Leave room lobby"""
         pass
     
     def _initialize_ui(self):
-        """初始化UI"""
+        """Initialize UI"""
         try:
             self.font = pygame.font.Font(None, 24)
             self.title_font = pygame.font.Font(None, 36)
@@ -385,14 +385,14 @@ class RoomLobbyState(GameState):
             self.font = pygame.font.Font(None, 24)
             self.title_font = pygame.font.Font(None, 36)
         
-        # 创建玩家槽位
+        # Create player slots
         self._create_player_slots()
         
-        # 创建按钮
+        # Create buttons
         self._create_buttons()
     
     def _create_player_slots(self):
-        """创建玩家槽位"""
+        """Create player slots"""
         self.player_slots = []
         
         slot_width = 180
@@ -420,15 +420,15 @@ class RoomLobbyState(GameState):
                 self.player_slots.append(slot)
     
     def _create_buttons(self):
-        """创建按钮"""
-        # Start Game 按钮 (仅房主可见)
+        """Create buttons"""
+        # Start Game button (only visible to host)
         self.start_button = Button(
             50, 500, 150, 50,
             "Start Game", self.font,
             self._on_start_game
         )
         
-        # Quit Game 按钮
+        # Quit Game button
         self.quit_button = Button(
             250, 500, 150, 50,
             "Quit Game", self.font,
@@ -438,71 +438,71 @@ class RoomLobbyState(GameState):
         self.buttons = [self.start_button, self.quit_button]
     
     def _update_button_states(self):
-        """更新按钮状态"""
+        """Update button states"""
         if hasattr(self, 'start_button'):
             self.start_button.set_enabled(self.is_host)
     
     def _on_slot_click(self, slot_id: int):
-        """玩家槽位点击"""
+        """Player slot click"""
         print(f"🎯 Slot {slot_id + 1} clicked")
         
         if not self.client or not self.client.connected:
             print("⚠️ Not connected to server")
             return
         
-        # 检查槽位是否可用
+        # Check if slot is available
         slot = self.player_slots[slot_id]
         if slot.is_occupied:
             print(f"⚠️ Slot {slot_id + 1} is already occupied")
             return
         
-        # 发送槽位切换请求
+        # Send slot change request
         slot_change_request = SlotChangeRequestMessage(
             player_id=self.client.player_id,
             target_slot=slot_id,
-            room_id=self.room_id  # 使用当前房间ID
+            room_id=self.room_id  # Use current room ID
         )
         
-        # 异步发送消息
+        # Send message asynchronously
         asyncio.create_task(self._send_slot_change_request(slot_change_request))
     
     async def _send_slot_change_request(self, message: SlotChangeRequestMessage):
-        """发送槽位切换请求"""
+        """Send slot change request"""
         if self.client and self.client.connected:
             await self.client.send_message(message)
             print(f"📤 Requested to move to slot {message.target_slot + 1}")
     
     def _on_start_game(self):
-        """开始游戏"""
+        """Start game"""
         if not self.is_host:
             return
         
         print("🚀 Starting game...")
         
-        # 发送开始游戏消息给服务器
+        # Send start game message to server
         if self.client and self.client.connected:
             start_game_message = RoomStartGameMessage(
-                room_id=self.room_id,  # 使用当前房间ID
+                room_id=self.room_id,  # Use current room ID
                 host_player_id=self.client.player_id
             )
             asyncio.create_task(self._send_start_game_message(start_game_message))
         
-        # 切换到游戏状态
+        # Switch to game state
         self.state_manager.change_state(GameStateType.IN_GAME)
     
     async def _send_start_game_message(self, message: RoomStartGameMessage):
-        """发送开始游戏消息"""
+        """Send start game message"""
         if self.client and self.client.connected:
             await self.client.send_message(message)
             print(f"📤 Sent start game message for room {message.room_id}")
     
     def _on_quit_game(self):
-        """退出游戏"""
+        """Quit game"""
         print("🚪 Quitting game...")
         
         if self.client and self.client.connected:
             if self.is_host:
-                # 房主退出，解散房间
+                # Host quits, disband room
                 print("🗑️ Host dissolving room...")
                 from tank_game_messages import RoomDisbandedMessage
                 disband_message = RoomDisbandedMessage(
@@ -512,7 +512,7 @@ class RoomLobbyState(GameState):
                 )
                 asyncio.create_task(self.client.send_message(disband_message))
             else:
-                # 普通玩家退出，发送离开消息
+                # Regular player quits, send leave message
                 print("👋 Leaving room...")
                 from tank_game_messages import PlayerLeaveMessage
                 leave_message = PlayerLeaveMessage(
@@ -524,37 +524,37 @@ class RoomLobbyState(GameState):
         self.state_manager.change_state(GameStateType.MAIN_MENU)
     
     def update_room(self, room_data: Dict[str, Any]):
-        """更新房间数据"""
-        # 更新玩家槽位显示
+        """Update room data"""
+        # Update player slot display
         players = room_data.get('players', [])
         
-        # 清空所有槽位
+        # Clear all slots
         for slot in self.player_slots:
             slot.set_player(None)
         
-        # 根据玩家的slot_index设置玩家数据
+        # Set player data based on player's slot_index
         for player_data in players:
             slot_index = player_data.get('slot_index', 0)
             if 0 <= slot_index < len(self.player_slots):
-                # 判断是否为本地玩家
+                # Determine if local player
                 is_local = (self.client and 
                            player_data.get('player_id') == self.client.player_id)
                 self.player_slots[slot_index].set_player(player_data, is_local)
     
     def set_client(self, client):
-        """设置客户端引用"""
+        """Set client reference"""
         self.client = client
-        # 如果已经有房间数据，重新更新显示
+        # If there's already room data, re-update display
         if hasattr(self, 'current_room') and self.current_room:
             self.update_room(self.current_room.to_dict())
     
     async def _create_room(self):
-        """创建房间"""
+        """Create room"""
         if not self.client or not self.client.connected:
             return
         
         try:
-            # 发送创建房间请求
+            # Send create room request
             create_room_message = CreateRoomRequestMessage(
                 room_name=self.room_name,
                 max_players=8,
@@ -565,16 +565,16 @@ class RoomLobbyState(GameState):
             print(f"📤 Sent room creation request for {self.room_name}")
         except Exception as e:
             print(f"❌ Failed to create room: {e}")
-            # 创建失败，返回主菜单
+            # Creation failed, return to main menu
             self.state_manager.change_state(GameStateType.MAIN_MENU)
     
     async def _join_room(self):
-        """加入现有房间"""
+        """Join existing room"""
         if not self.client or not self.client.connected:
             return
         
         try:
-            # 发送加入房间消息
+            # Send join room message
             join_message = PlayerJoinMessage(
                 player_id=self.client.player_id,
                 player_name=self.client.player_name,
@@ -584,21 +584,21 @@ class RoomLobbyState(GameState):
             print(f"📤 Sent join message for room {self.room_id}")
         except Exception as e:
             print(f"❌ Failed to join room: {e}")
-            # 加入失败，返回服务器浏览器
+            # Join failed, return to server browser
             self.state_manager.change_state(GameStateType.SERVER_BROWSER)
     
     def update(self, dt: float):
-        """更新房间大厅"""
+        """Update room lobby"""
         pass
     
     def handle_event(self, event: pygame.event.Event) -> bool:
-        """处理事件"""
-        # 处理槽位点击
+        """Handle events"""
+        # Handle slot clicks
         for slot in self.player_slots:
             if slot.handle_event(event):
                 return True
         
-        # 处理按钮点击
+        # Handle button clicks
         for button in self.buttons:
             if button.handle_event(event):
                 return True
@@ -606,24 +606,24 @@ class RoomLobbyState(GameState):
         return False
     
     def render(self, surface: pygame.Surface):
-        """渲染房间大厅"""
+        """Render room lobby"""
         surface.fill((30, 30, 40))
         
-        # 标题
+        # Title
         title_text = self.title_font.render("Game Room", True, (255, 255, 255))
         surface.blit(title_text, (50, 50))
         
-        # 房主标识
+        # Host indicator
         if self.is_host:
             host_text = self.font.render("You are the host", True, (100, 255, 100))
             surface.blit(host_text, (50, 90))
         
-        # 房间信息
+        # Room information
         player_count = sum(1 for slot in self.player_slots if slot.is_occupied)
         info_text = self.font.render(f"Players: {player_count}/{MAX_PLAYERS_PER_ROOM} - Click empty slots to join", True, (200, 200, 200))
         surface.blit(info_text, (50, 120))
         
-        # 连接状态
+        # Connection status
         if self.client:
             if self.client.connected:
                 status_text = self.font.render("Connected to server", True, (100, 255, 100))
@@ -631,73 +631,107 @@ class RoomLobbyState(GameState):
                 status_text = self.font.render("Not connected", True, (255, 100, 100))
             surface.blit(status_text, (50, 150))
         
-        # 玩家槽位
+        # Player slots
         for slot in self.player_slots:
             slot.draw(surface)
         
-        # 按钮
+        # Buttons
         for button in self.buttons:
             button.draw(surface)
 
 
 class InGameState(GameState):
-    """游戏中状态"""
+    """In-game state"""
     
     def __init__(self, state_manager):
         super().__init__(state_manager)
-        self.client = None  # 游戏客户端引用
+        self.client = None  # Game client reference
         
     def enter(self, previous_state=None, **kwargs):
-        """进入游戏"""
+        """Enter game"""
         print("🎮 Entered In-Game State")
         
-        # 清理之前游戏状态的残留数据
+        # Reset game result state
         if self.client:
-            # 保留玩家数据，只清理子弹
+            self.client.game_result = None
+            self.client.game_result_data = None
+        
+        # Clear residual data from previous game state
+        if self.client:
+            # Keep player data, only clear bullets
             self.client.bullets.clear()
             print("🧹 Cleared bullets from previous game state")
-        
+    
     def exit(self, next_state=None):
-        """离开游戏"""
+        """Leave game"""
         print("🚪 Exiting game state")
     
     def update(self, dt: float):
-        """更新游戏"""
-        # 游戏逻辑更新在主循环中处理
+        """Update game"""
+        # Game logic updates are handled in the main loop
         pass
     
     def handle_event(self, event: pygame.event.Event) -> bool:
-        """处理游戏事件"""
-        # ESC 键返回主菜单
+        """Handle game events"""
+        # Check if game has ended (victory/defeat)
+        if self.client and (self.client.game_result == "victory" or self.client.game_result == "defeat"):
+            # Any key pressed - exit to main menu
+            if event.type == pygame.KEYDOWN:
+                print("🚪 Game ended, returning to main menu...")
+                
+                # Reset game result state
+                self.client.game_result = None
+                self.client.game_result_data = None
+                
+                # Send leave room message
+                if self.client.connected:
+                    leave_message = PlayerLeaveMessage(
+                        player_id=self.client.player_id,
+                        reason="game_ended"
+                    )
+                    asyncio.create_task(self.client.send_message(leave_message))
+                
+                # Clear game state
+                if self.client:
+                    self.client.bullets.clear()
+                    self.client.players.clear()
+                
+                # Return to main menu
+                self.state_manager.change_state(GameStateType.MAIN_MENU)
+                return True
+            return True  # Consume all events when game has ended
+        
+        # Normal game event handling
+        # ESC key returns to main menu
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 print("🚪 ESC pressed in game, returning to main menu...")
                 
-                # 发送离开房间消息
+                # Send leave room message
                 if self.client and self.client.connected:
-                    # 发送玩家离开消息
+                    # Send player leave message
                     leave_message = PlayerLeaveMessage(
                         player_id=self.client.player_id,
                         reason="exit_game"
                     )
                     asyncio.create_task(self.client.send_message(leave_message))
                 
-                # 清理游戏状态
+                # Clear game state
                 if self.client:
                     self.client.bullets.clear()
                     self.client.players.clear()
                 
-                # 返回主菜单
+                # Return to main menu
                 self.state_manager.change_state(GameStateType.MAIN_MENU)
                 return True
         
-        # 其他游戏事件在主循环中处理
+        # Other game events are handled in the main loop
         return False
     
     def render(self, surface: pygame.Surface):
-        """渲染游戏"""
+        """Render game"""
         if not self.client:
-            # 如果没有客户端，显示错误信息
+            # If no client, display error message
             surface.fill((50, 0, 0))
             font = pygame.font.Font(None, 36)
             text = font.render("Game Client Not Available", True, (255, 255, 255))
@@ -705,14 +739,14 @@ class InGameState(GameState):
             surface.blit(text, text_rect)
             return
         
-        # 清屏
-        surface.fill((0, 0, 0))  # 黑色背景
+        # Clear screen
+        surface.fill((0, 0, 0))  # Black background
         
         if self.client.connected and self.client.players:
-            # 渲染游戏世界
+            # Render game world
             self.client.render_game_world()
         else:
-            # 显示连接状态
+            # Display connection status
             font = pygame.font.Font(None, 36)
             if not self.client.connected:
                 text = font.render("Not connected to server", True, (255, 255, 100))
@@ -722,8 +756,80 @@ class InGameState(GameState):
             text_rect = text.get_rect(center=(400, 300))
             surface.blit(text, text_rect)
             
-            # 显示返回提示
+            # Display return hint
             small_font = pygame.font.Font(None, 24)
             hint_text = small_font.render("Press ESC to return to main menu", True, (200, 200, 200))
             hint_rect = hint_text.get_rect(center=(400, 350))
-            surface.blit(hint_text, hint_rect) 
+            surface.blit(hint_text, hint_rect)
+        
+        # Render victory/defeat banners if game has ended
+        if self.client.game_result == "victory":
+            self._render_victory_banner(surface)
+        elif self.client.game_result == "defeat":
+            self._render_defeat_banner(surface)
+    
+    def _render_victory_banner(self, surface: pygame.Surface):
+        """Render victory banner"""
+        # Semi-transparent overlay
+        overlay = pygame.Surface((800, 600))
+        overlay.set_alpha(180)
+        overlay.fill((0, 50, 0))  # Dark green overlay
+        surface.blit(overlay, (0, 0))
+        
+        # Victory text
+        big_font = pygame.font.Font(None, 72)
+        victory_text = big_font.render("YOU WIN!", True, (0, 255, 0))
+        victory_rect = victory_text.get_rect(center=(400, 250))
+        surface.blit(victory_text, victory_rect)
+        
+        # Game details
+        if self.client.game_result_data:
+            data = self.client.game_result_data
+            medium_font = pygame.font.Font(None, 36)
+            
+            duration_text = medium_font.render(f"Game Duration: {data.game_duration:.1f}s", True, (200, 255, 200))
+            duration_rect = duration_text.get_rect(center=(400, 320))
+            surface.blit(duration_text, duration_rect)
+            
+            players_text = medium_font.render(f"Total Players: {data.total_players}", True, (200, 255, 200))
+            players_rect = players_text.get_rect(center=(400, 360))
+            surface.blit(players_text, players_rect)
+        
+        # Exit instruction
+        small_font = pygame.font.Font(None, 24)
+        exit_text = small_font.render("Press any key to return to main menu", True, (255, 255, 255))
+        exit_rect = exit_text.get_rect(center=(400, 450))
+        surface.blit(exit_text, exit_rect)
+    
+    def _render_defeat_banner(self, surface: pygame.Surface):
+        """Render defeat banner"""
+        # Semi-transparent overlay
+        overlay = pygame.Surface((800, 600))
+        overlay.set_alpha(180)
+        overlay.fill((50, 0, 0))  # Dark red overlay
+        surface.blit(overlay, (0, 0))
+        
+        # Defeat text
+        big_font = pygame.font.Font(None, 72)
+        defeat_text = big_font.render("YOU LOSE", True, (255, 0, 0))
+        defeat_rect = defeat_text.get_rect(center=(400, 250))
+        surface.blit(defeat_text, defeat_rect)
+        
+        # Game details
+        if self.client.game_result_data:
+            data = self.client.game_result_data
+            medium_font = pygame.font.Font(None, 36)
+            
+            killer_text = medium_font.render(f"Eliminated by: {data.killer_name}", True, (255, 200, 200))
+            killer_rect = killer_text.get_rect(center=(400, 320))
+            surface.blit(killer_text, killer_rect)
+            
+            survival_text = medium_font.render(f"Survival Time: {data.survival_time:.1f}s", True, (255, 200, 200))
+            survival_rect = survival_text.get_rect(center=(400, 360))
+            surface.blit(survival_text, survival_rect)
+        
+        # Exit instruction
+        small_font = pygame.font.Font(None, 24)
+        exit_text = small_font.render("Press any key to return to main menu", True, (255, 255, 255))
+        exit_rect = exit_text.get_rect(center=(400, 450))
+        surface.blit(exit_text, exit_rect) 

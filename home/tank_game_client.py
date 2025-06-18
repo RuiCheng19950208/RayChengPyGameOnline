@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-完美坦克游戏客户端 - 消除位置颤动和预测不一致
+Perfect tank game client - eliminates position jitter and prediction inconsistencies
 
-核心原则：
-1. 前端和服务器使用完全相同的运动算法
-2. 按键事件驱动的状态机
-3. 单一权威位置源
-4. 最小化位置校正
+Core principles:
+1. Frontend and server use exactly the same movement algorithms
+2. Key event-driven state machine
+3. Single authoritative position source
+4. Minimize position corrections
 """
 
 import asyncio
@@ -24,21 +24,21 @@ from websockets.client import WebSocketClientProtocol
 from dotenv import load_dotenv
 import argparse
 
-# 添加共享目录到 Python 路径
+# Add shared directory to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'shared'))
 
 from tank_game_messages import *
-# 导入共享的实体类
+# Import shared entity classes
 from tank_game_entities import Player, Bullet
-# 导入状态机系统
+# Import state machine system
 from game_states import GameStateManager, GameStateType
 from game_state_implementations import MainMenuState, ServerBrowserState, RoomLobbyState, InGameState
 
-# 加载环境变量 - 使用项目根目录的共享 .env 文件
+# Load environment variables - use shared .env file from project root
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 def get_local_ip():
-    """获取本机IP地址"""
+    """Get local machine IP address"""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # Create a fake UDP connection to Google DNS
         s.connect(("8.8.8.8", 80)) #Google DNS, safe and reliable
@@ -47,23 +47,23 @@ def get_local_ip():
         return local_ip
     except Exception:
         try:
-            # 方法2：获取主机名对应的IP
+            # Method 2: Get IP from hostname
             hostname = socket.gethostname()
             local_ip = socket.gethostbyname(hostname)
             if not local_ip.startswith('127.'):
                 return local_ip
         except Exception:
             pass
-        return "127.0.0.1"  # 最后的fallback
+        return "127.0.0.1"  # Final fallback
 
-# 游戏配置
+# Game configuration
 SCREEN_WIDTH = int(os.getenv('SCREEN_WIDTH', 800))
 SCREEN_HEIGHT = int(os.getenv('SCREEN_HEIGHT', 600))
 FPS = int(os.getenv('FPS', 60))
 TANK_SPEED = int(os.getenv('TANK_SPEED', 300))
 DEFAULT_FONT_PATH = os.getenv('DEFAULT_FONT_PATH', None)
 
-# 服务器连接配置 - 使用真实IP地址
+# Server connection configuration - use real IP address
 DEFAULT_LOCAL_IP = get_local_ip()
 SERVER_PORT = int(os.getenv('SERVER_PORT', 8765))
 DEFAULT_SERVER_URL = f"ws://{DEFAULT_LOCAL_IP}:{SERVER_PORT}"
@@ -71,7 +71,7 @@ DEFAULT_SERVER_URL = f"ws://{DEFAULT_LOCAL_IP}:{SERVER_PORT}"
 
 print(f"🌐 Auto-detected local IP: {DEFAULT_LOCAL_IP}")
 
-# 颜色定义
+# Color definitions
 COLORS = {
     'BLACK': (0, 0, 0),
     'WHITE': (255, 255, 255),
@@ -85,26 +85,30 @@ COLORS = {
 }
 
 class GameClient:
-    """完美游戏客户端 - 现在使用状态机系统"""
+    """Perfect game client - now uses state machine system"""
     
     def __init__(self, server_url: str = None):
         self.server_url = server_url or DEFAULT_SERVER_URL
         self.websocket: Optional[WebSocketClientProtocol] = None
         self.connected = False
         
-        # 客户端状态
+        # Client state
         self.client_id: Optional[str] = None
         self.player_id: Optional[str] = None
         self.player_name = f"Player_{int(time.time()) % 10000}"
         
-        # 游戏状态
+        # Game state
         self.players: Dict[str, Player] = {}
         self.bullets: Dict[str, Bullet] = {}
         
-        # 房间列表（用于服务器浏览器）
+        # Room list (for server browser)
         self.room_list: List[Dict[str, Any]] = []
         
-        # 输入状态 - 简化的按键状态机
+        # Game result state
+        self.game_result = None  # None, "victory", "defeat"
+        self.game_result_data = None  # Store victory/defeat message data
+        
+        # Input state - simplified key state machine
         self.input_state = {
             'w': False, 'a': False, 's': False, 'd': False,
             'mouse_clicked': False,
@@ -112,88 +116,88 @@ class GameClient:
         }
         self.last_input_state = self.input_state.copy()
         
-        # Ping相关
+        # Ping related
         self.ping_sequence = 0
         self.ping_times: Dict[int, float] = {}
         self.current_ping = 0
         
-        # 发送优化
+        # Send optimization
         self.last_movement_send = 0
-        self.movement_send_interval = 0.05  # 20 FPS 发送，从33 FPS降低
-        self.position_change_threshold = 5.0  # 位置变化阈值
+        self.movement_send_interval = 0.05  # 20 FPS send, reduced from 33 FPS
+        self.position_change_threshold = 5.0  # Position change threshold
         
-        # 性能监控
+        # Performance monitoring
         self.frame_count = 0
         self.fps_counter = 0
         self.last_fps_time = time.time()
         
-        # 初始化 Pygame
+        # Initialize Pygame
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption(f"坦克大战 - 完美版 ✨ ({SCREEN_WIDTH}x{SCREEN_HEIGHT})")
+        pygame.display.set_caption(f"Tank Wars - Perfect Edition ✨ ({SCREEN_WIDTH}x{SCREEN_HEIGHT})")
         self.clock = pygame.time.Clock()
         
-        # 字体
+        # Fonts
         try:
-            # 尝试加载指定字体文件
+            # Try to load specified font file
             if DEFAULT_FONT_PATH and os.path.exists(DEFAULT_FONT_PATH):
                 self.font = pygame.font.Font(DEFAULT_FONT_PATH, 24)
                 self.small_font = pygame.font.Font(DEFAULT_FONT_PATH, 16)
                 self.big_font = pygame.font.Font(DEFAULT_FONT_PATH, 32)
                 print(f"✅ Loaded custom font: {DEFAULT_FONT_PATH}")
             else:
-                # 字体文件不存在，使用默认字体
+                # Font file doesn't exist, use default font
                 self.font = pygame.font.Font(None, 24)
                 self.small_font = pygame.font.Font(None, 16)
                 self.big_font = pygame.font.Font(None, 32)
         except Exception as e:
             print(f"⚠️ Error loading font: {e}, using default font")
         
-        # 初始化状态机
+        # Initialize state machine
         self.state_manager = GameStateManager()
         self._register_states()
         
-        # 自动连接到服务器
+        # Auto-connect to server
         asyncio.create_task(self.connect())
         
         print(f"✨ GameClient initialized for {self.server_url}")
     
     def _register_states(self):
-        """注册游戏状态"""
-        # 设置客户端引用给状态管理器，用于状态间的清理操作
+        """Register game states"""
+        # Set client reference for state manager, used for cleanup operations between states
         self.state_manager.client_ref = self
         
-        # 注册所有状态
+        # Register all states
         self.state_manager.register_state(GameStateType.MAIN_MENU, MainMenuState(self.state_manager))
         self.state_manager.register_state(GameStateType.SERVER_BROWSER, ServerBrowserState(self.state_manager))
         
-        # 房间大厅状态需要特殊处理
+        # Room lobby state needs special handling
         room_lobby_state = RoomLobbyState(self.state_manager)
         room_lobby_state.set_client(self)
         self.state_manager.register_state(GameStateType.ROOM_LOBBY, room_lobby_state)
         
-        # 游戏状态需要客户端引用
+        # Game state needs client reference
         in_game_state = InGameState(self.state_manager)
         in_game_state.client = self
         self.state_manager.register_state(GameStateType.IN_GAME, in_game_state)
         
-        # 开始时进入主菜单
+        # Start by entering main menu
         self.state_manager.change_state(GameStateType.MAIN_MENU)
     
     def set_server_url(self, server_url: str):
-        """设置服务器URL"""
+        """Set server URL"""
         self.server_url = server_url
         print(f"🔄 Server URL changed to: {server_url}")
     
     async def connect(self):
-        """连接到服务器 - 初始化时自动连接"""
+        """Connect to server - auto-connect during initialization"""
         try:
             print(f"🔗 Connecting to {self.server_url}...")
             self.websocket = await websockets.connect(self.server_url)
             self.connected = True
             print("✅ Connected to server")
             
-            # 启动消息接收循环
+            # Start message receiving loop
             asyncio.create_task(self.message_loop())
             
         except Exception as e:
@@ -201,10 +205,10 @@ class GameClient:
             self.connected = False
     
     async def disconnect(self):
-        """断开连接"""
+        """Disconnect"""
         if self.connected and self.websocket and self.player_id:
             try:
-                # 发送离开消息
+                # Send leave message
                 leave_message = PlayerLeaveMessage(
                     player_id=self.player_id,
                     reason="normal"
@@ -212,7 +216,7 @@ class GameClient:
                 await self.send_message(leave_message)
                 print(f"📤 Sent leave message for player {self.player_id}")
                 
-                # 等待一小段时间确保消息发送
+                # Wait briefly to ensure message is sent
                 await asyncio.sleep(0.1)
             except Exception as e:
                 print(f"⚠️ Error sending leave message: {e}")
@@ -223,7 +227,7 @@ class GameClient:
         print("🔌 Disconnected from server")
     
     async def send_message(self, message: GameMessage):
-        """发送消息到服务器"""
+        """Send message to server"""
         if not self.websocket or not self.connected:
             return
         
@@ -233,7 +237,7 @@ class GameClient:
             print(f"❌ Error sending message: {e}")
     
     async def message_loop(self):
-        """消息接收循环"""
+        """Message receiving loop"""
         try:
             async for raw_message in self.websocket:
                 message = parse_message(raw_message)
@@ -247,7 +251,7 @@ class GameClient:
             self.connected = False
     
     async def handle_message(self, message: GameMessage):
-        """处理接收到的消息"""
+        """Handle received messages"""
         if message.type == GameMessageType.CONNECTION_ACK:
             await self.handle_connection_ack(message)
         elif message.type == GameMessageType.GAME_STATE_UPDATE:
@@ -264,6 +268,10 @@ class GameClient:
             await self.handle_bullet_destroyed(message)
         elif message.type == GameMessageType.PLAYER_DEATH:
             await self.handle_player_death(message)
+        elif message.type == GameMessageType.GAME_VICTORY:
+            await self.handle_game_victory(message)
+        elif message.type == GameMessageType.GAME_DEFEAT:
+            await self.handle_game_defeat(message)
         elif message.type == GameMessageType.PLAYER_JOIN:
             await self.handle_player_join(message)
         elif message.type == GameMessageType.PLAYER_LEAVE:
@@ -286,58 +294,58 @@ class GameClient:
             print(f"⚠️ Unhandled message type: {message.type}")
     
     async def handle_connection_ack(self, message: ConnectionAckMessage):
-        """处理连接确认"""
+        """Handle connection acknowledgment"""
         self.client_id = message.client_id
         self.player_id = message.assigned_player_id
         print(f"🆔 Assigned player ID: {self.player_id}")
         
-        # 检查是否需要自动加入（对于非房主客户端）
+        # Check if auto-join is needed (for non-host clients)
         current_state = self.state_manager.get_current_state_type()
         if current_state == GameStateType.ROOM_LOBBY:
             room_lobby_state = self.state_manager.states.get(GameStateType.ROOM_LOBBY)
             if room_lobby_state and not room_lobby_state.is_host:
-                # 非房主客户端，加入默认房间
+                # Non-host client, join default room
                 join_message = PlayerJoinMessage(
                     player_id=self.player_id,
                     player_name=self.player_name,
-                    room_id="default"  # 加入默认房间
+                    room_id="default"  # Join default room
                 )
                 await self.send_message(join_message)
                 print(f"📤 Sent join message for default room")
-        # 房主客户端不在这里发送加入消息，等待房间创建成功后发送
+        # Host client doesn't send join message here, waits for room creation success
     
     async def handle_game_state_update(self, message: GameStateUpdateMessage):
-        """处理游戏状态更新 - 完美同步"""
-        # 更新玩家状态
+        """Handle game state update - perfect sync"""
+        # Update player states
         for player_data in message.players:
             player_id = player_data['player_id']
             if player_id in self.players:
-                # 更新现有玩家
+                # Update existing player
                 self.players[player_id].update_from_server(
                     player_data['position'],
                     player_data.get('moving_directions')
                 )
-                # 更新其他属性
+                # Update other attributes
                 self.players[player_id].health = player_data.get('health', 100)
                 self.players[player_id].is_alive = player_data.get('is_alive', True)
                 self.players[player_id].slot_index = player_data.get('slot_index', 0)
             else:
-                # 新玩家
+                # New player
                 new_player = Player(player_data)
                 self.players[player_id] = new_player
                 
                 if player_id == self.player_id:
                     print(f"🎮 Local player initialized at slot {new_player.slot_index}, position {new_player.position}")
         
-        # 更新子弹状态
+        # Update bullet states
         server_bullets = {b['bullet_id']: b for b in message.bullets}
         
-        # 添加新子弹
+        # Add new bullets
         for bullet_id, bullet_data in server_bullets.items():
             if bullet_id not in self.bullets:
                 self.bullets[bullet_id] = Bullet(bullet_data)
         
-        # 移除服务器上不存在的子弹
+        # Remove bullets that don't exist on server
         bullets_to_remove = []
         for bullet_id in self.bullets:
             if bullet_id not in server_bullets:
@@ -346,7 +354,7 @@ class GameClient:
         for bullet_id in bullets_to_remove:
             del self.bullets[bullet_id]
         
-        # 如果当前在房间大厅状态，更新房间显示
+        # If currently in room lobby state, update room display
         current_state = self.state_manager.get_current_state_type()
         if current_state == GameStateType.ROOM_LOBBY:
             room_data = {
@@ -357,14 +365,14 @@ class GameClient:
             self.update_room_display(room_data)
     
     async def handle_player_move(self, message: PlayerMoveMessage):
-        """处理其他玩家移动"""
+        """Handle other player movement"""
         if message.player_id != self.player_id and message.player_id in self.players:
             self.players[message.player_id].update_from_server(
                 message.position, message.direction
             )
     
     async def handle_player_stop(self, message: PlayerStopMessage):
-        """处理其他玩家停止"""
+        """Handle other player stop"""
         if message.player_id != self.player_id and message.player_id in self.players:
             self.players[message.player_id].update_from_server(message.position)
             self.players[message.player_id].moving_directions = {
@@ -372,7 +380,7 @@ class GameClient:
             }
     
     async def handle_bullet_fired(self, message: BulletFiredMessage):
-        """处理子弹发射"""
+        """Handle bullet fired"""
         bullet_data = {
             'bullet_id': message.bullet_id,
             'owner_id': message.owner_id,
@@ -384,45 +392,73 @@ class GameClient:
         self.bullets[message.bullet_id] = Bullet(bullet_data)
     
     async def handle_collision(self, message: CollisionMessage):
-        """处理碰撞事件"""
+        """Handle collision events"""
         if message.target_player_id in self.players:
             self.players[message.target_player_id].health = message.new_health
             if message.new_health <= 0:
                 self.players[message.target_player_id].is_alive = False
     
     async def handle_bullet_destroyed(self, message: BulletDestroyedMessage):
-        """处理子弹销毁"""
+        """Handle bullet destruction"""
         if message.bullet_id in self.bullets:
             del self.bullets[message.bullet_id]
     
     async def handle_player_death(self, message: PlayerDeathMessage):
-        """处理玩家死亡"""
+        """Handle player death"""
         if message.player_id in self.players:
             self.players[message.player_id].is_alive = False
             self.players[message.player_id].health = 0
     
+    async def handle_game_victory(self, message):
+        """Handle game victory"""
+        from tank_game_messages import GameVictoryMessage
+        if isinstance(message, GameVictoryMessage):
+            print(f"🏆 Victory! {message.winner_player_name} won the game!")
+            
+            # Set victory state for local player
+            if message.winner_player_id == self.player_id:
+                self.game_result = "victory"
+                self.game_result_data = message
+                print(f"🎉 You won! Game duration: {message.game_duration:.1f}s")
+        else:
+            print(f"⚠️ Unexpected game victory message type: {type(message)}")
+    
+    async def handle_game_defeat(self, message):
+        """Handle game defeat"""
+        from tank_game_messages import GameDefeatMessage
+        if isinstance(message, GameDefeatMessage):
+            print(f"💔 Defeat! {message.eliminated_player_name} was eliminated by {message.killer_name}")
+            
+            # Set defeat state for local player
+            if message.eliminated_player_id == self.player_id:
+                self.game_result = "defeat"
+                self.game_result_data = message
+                print(f"😵 You were eliminated! Survival time: {message.survival_time:.1f}s")
+        else:
+            print(f"⚠️ Unexpected game defeat message type: {type(message)}")
+    
     async def handle_player_join(self, message: PlayerJoinMessage):
-        """处理玩家加入"""
+        """Handle player join"""
         print(f"👤 Player {message.player_name} joined")
     
     async def handle_player_leave(self, message: PlayerLeaveMessage):
-        """处理玩家离开"""
+        """Handle player leave"""
         if message.player_id in self.players:
             player_name = self.players[message.player_id].name
             print(f"👋 Player {player_name} left")
             del self.players[message.player_id]
     
     async def handle_room_created(self, message: RoomCreatedMessage):
-        """处理房间创建成功"""
+        """Handle room creation success"""
         print(f"🏠 Room created successfully: {message.room_name} (ID: {message.room_id})")
         
-        # 更新房间大厅状态的房间ID
+        # Update room lobby state's room ID
         room_lobby_state = self.state_manager.states.get(GameStateType.ROOM_LOBBY)
         if room_lobby_state:
             room_lobby_state.room_id = message.room_id
             print(f"🔄 Updated room lobby state with room ID: {message.room_id}")
         
-        # 发送加入游戏消息，指定房间ID
+        # Send join game message, specify room ID
         join_message = PlayerJoinMessage(
             player_id=self.player_id,
             player_name=self.player_name,
@@ -432,15 +468,15 @@ class GameClient:
         print(f"📤 Sent join message for room {message.room_id}")
     
     async def handle_room_start_game(self, message):
-        """处理房间开始游戏"""
+        """Handle room start game"""
         from tank_game_messages import RoomStartGameMessage
         if isinstance(message, RoomStartGameMessage):
             print(f"🚀 Game starting in room {message.room_id} by host {message.host_player_id}")
             
-            # 清理之前的游戏状态
+            # Clear previous game state
             self.bullets.clear()
             
-            # 切换到游戏状态
+            # Switch to game state
             current_state = self.state_manager.get_current_state_type()
             if current_state == GameStateType.ROOM_LOBBY:
                 print("🎮 Switching to IN_GAME state")
@@ -451,7 +487,7 @@ class GameClient:
             print(f"⚠️ Unexpected room start game message type: {type(message)}")
     
     async def handle_room_list(self, message):
-        """处理房间列表响应"""
+        """Handle room list response"""
         from tank_game_messages import RoomListMessage
         if isinstance(message, RoomListMessage):
             self.room_list = message.rooms
@@ -462,16 +498,16 @@ class GameClient:
             print(f"⚠️ Unexpected room list message type: {type(message)}")
     
     async def handle_room_disbanded(self, message):
-        """处理房间解散"""
+        """Handle room disbanded"""
         from tank_game_messages import RoomDisbandedMessage
         if isinstance(message, RoomDisbandedMessage):
             print(f"🏠 Room {message.room_id} disbanded by {message.disbanded_by} (reason: {message.reason})")
             
-            # 清理游戏状态
+            # Clear game state
             self.players.clear()
             self.bullets.clear()
             
-            # 如果当前在房间大厅状态，自动返回主菜单
+            # If currently in room lobby state, auto-return to main menu
             current_state = self.state_manager.get_current_state_type()
             if current_state in [GameStateType.ROOM_LOBBY, GameStateType.IN_GAME]:
                 print("🔄 Room disbanded - returning to main menu")
@@ -480,28 +516,28 @@ class GameClient:
             print(f"⚠️ Unexpected room disbanded message type: {type(message)}")
     
     async def handle_slot_changed(self, message: SlotChangedMessage):
-        """处理玩家槽位变化"""
+        """Handle player slot change"""
         if message.player_id in self.players:
             self.players[message.player_id].slot_index = message.new_slot
             print(f"🎮 Player {message.player_id} moved to slot {message.new_slot + 1}")
         
-        # 如果是本地玩家的槽位变化，给出反馈
+        # If it's local player's slot change, give feedback
         if message.player_id == self.player_id:
             print(f"✅ You moved to slot {message.new_slot + 1}")
     
     async def handle_pong(self, message: PongMessage):
-        """处理 Pong 响应"""
+        """Handle Pong response"""
         if message.sequence in self.ping_times:
             ping_time = time.time() - self.ping_times[message.sequence]
             self.current_ping = int(ping_time * 1000)
             del self.ping_times[message.sequence]
     
     async def handle_error(self, message: ErrorMessage):
-        """处理错误消息"""
+        """Handle error messages"""
         print(f"❌ Server error: {message.error_code} - {message.error_message}")
     
     async def send_ping(self):
-        """发送 Ping"""
+        """Send Ping"""
         if not self.connected:
             return
         
@@ -515,7 +551,7 @@ class GameClient:
         await self.send_message(ping_message)
     
     def handle_input(self, event):
-        """处理输入事件 - 按键事件驱动"""
+        """Handle input events - key event driven"""
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_w:
                 self.input_state['w'] = True
@@ -537,16 +573,16 @@ class GameClient:
                 self.input_state['d'] = False
         
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 1:  # 左键
+            if event.button == 1:  # Left click
                 self.input_state['mouse_clicked'] = True
                 print(f"🖱️ Mouse clicked at {event.pos}, state: connected={self.connected}, player_id={self.player_id}")
         
         elif event.type == pygame.MOUSEMOTION:
-            # 直接使用鼠标坐标
+            # Directly use mouse coordinates
             self.input_state['mouse_pos'] = event.pos
     
     def update_fps_counter(self):
-        """更新FPS计数器"""
+        """Update FPS counter"""
         self.frame_count += 1
         current_time = time.time()
         if current_time - self.last_fps_time >= 1.0:
@@ -555,13 +591,13 @@ class GameClient:
             self.last_fps_time = current_time
 
     def update_local_player(self, dt: float):
-        """更新本地玩家 - 与服务器完全相同的算法"""
+        """Update local player - exactly same algorithm as server"""
         if not self.player_id or self.player_id not in self.players:
             return
         
         local_player = self.players[self.player_id]
         
-        # 更新移动方向状态
+        # Update movement direction state
         local_player.moving_directions = {
             'w': self.input_state['w'],
             'a': self.input_state['a'],
@@ -569,27 +605,27 @@ class GameClient:
             'd': self.input_state['d']
         }
         
-        # 使用与服务器相同的位置更新算法
+        # Use same position update algorithm as server
         local_player.update_position(dt)
     
     async def send_movement_if_changed(self):
-        """智能发送移动消息 - 只在真正需要时发送"""
+        """Smart send movement messages - only send when truly needed"""
         current_time = time.time()
         
         if not self.connected or not self.player_id or self.player_id not in self.players:
             return
         
-        # 检查输入是否改变
+        # Check if input changed
         movement_keys = ['w', 'a', 's', 'd']
         input_changed = any(
             self.input_state[key] != self.last_input_state[key] 
             for key in movement_keys
         )
         
-        # 检查位置是否有显著变化
+        # Check if position has significant change
         current_player = self.players[self.player_id]
         position_changed = False
-        dx, dy = 0.0, 0.0  # 初始化变量
+        dx, dy = 0.0, 0.0  # Initialize variables
         
         if hasattr(self, 'last_sent_position'):
             dx = abs(current_player.position['x'] - self.last_sent_position['x'])
@@ -597,13 +633,13 @@ class GameClient:
             position_changed = (dx > self.position_change_threshold or 
                               dy > self.position_change_threshold)
         else:
-            position_changed = True  # 首次发送
+            position_changed = True  # First send
         
-        # 定期发送（防止丢包）
+        # Periodic send (prevent packet loss)
         time_since_last_send = current_time - self.last_movement_send
-        periodic_send = time_since_last_send > (self.movement_send_interval * 3)  # 每3个周期强制发送一次
+        periodic_send = time_since_last_send > (self.movement_send_interval * 3)  # Force send every 3 cycles
         
-        # 决定是否发送
+        # Decide whether to send
         should_send = (input_changed or position_changed or periodic_send or
                       time_since_last_send > self.movement_send_interval)
         
@@ -615,7 +651,7 @@ class GameClient:
                 'd': self.input_state['d']
             }
             
-            # 使用当前玩家位置
+            # Use current player position
             current_position = current_player.position.copy()
             
             move_message = PlayerMoveMessage(
@@ -625,12 +661,12 @@ class GameClient:
             )
             await self.send_message(move_message)
             
-            # 更新发送记录
+            # Update send records
             self.last_movement_send = current_time
             self.last_input_state = self.input_state.copy()
             self.last_sent_position = current_position.copy()
             
-            # 调试信息
+            # Debug info
             if input_changed:
                 print(f"📤 Input changed: {directions}")
             elif position_changed:
@@ -639,152 +675,152 @@ class GameClient:
                 print(f"📤 Periodic send (anti-packet-loss)")
     
     async def send_shoot(self):
-        """发送射击消息 - 使用准确的玩家位置"""
+        """Send shoot message - use accurate player position"""
         if not self.connected or not self.player_id or self.player_id not in self.players:
             print(f"🚫 Cannot shoot: connected={self.connected}, player_id={self.player_id}, in_players={self.player_id in self.players if self.player_id else False}")
             return
         
-        # 使用当前玩家的准确位置
+        # Use current player's accurate position
         player_pos = self.players[self.player_id].position
         
-        # 计算射击方向
+        # Calculate shooting direction
         mouse_x, mouse_y = self.input_state['mouse_pos']
         dx = mouse_x - player_pos['x']
         dy = mouse_y - player_pos['y']
         
-        # 归一化方向向量
+        # Normalize direction vector
         length = math.sqrt(dx * dx + dy * dy)
         if length > 0:
             dx /= length
             dy /= length
         
-        # 发送射击消息
+        # Send shoot message
         shoot_message = PlayerShootMessage(
             player_id=self.player_id,
-            position=player_pos,  # 使用准确位置
+            position=player_pos,  # Use accurate position
             direction={"x": dx, "y": dy},
             bullet_id=str(uuid.uuid4())
         )
         await self.send_message(shoot_message)
         print(f"💥 Sent shoot message: pos=({player_pos['x']:.1f}, {player_pos['y']:.1f}), dir=({dx:.2f}, {dy:.2f})")
         
-        # 重置点击状态
+        # Reset click state
         self.input_state['mouse_clicked'] = False
     
     def update_game_objects(self, dt: float):
-        """更新游戏对象 - 修复：只更新远程玩家，避免重复更新本地玩家"""
-        # 只更新远程玩家位置，本地玩家已在update_local_player中更新
+        """Update game objects - fix: only update remote players, avoid duplicate updates of local player"""
+        # Only update remote players' positions, local player already updated in update_local_player
         for player_id, player in self.players.items():
-            if player_id != self.player_id:  # 只更新其他玩家
+            if player_id != self.player_id:  # Only update other players
                 player.update_position(dt)
         
-        # 更新子弹位置
+        # Update bullet positions
         bullets_to_remove = []
         for bullet_id, bullet in self.bullets.items():
             if not bullet.update(dt):
                 bullets_to_remove.append(bullet_id)
         
-        # 移除无效子弹
+        # Remove invalid bullets
         for bullet_id in bullets_to_remove:
             del self.bullets[bullet_id]
     
     def render(self):
-        """完美渲染 - 直接在屏幕上绘制"""
-        # 直接在屏幕上绘制
+        """Perfect render - draw directly on screen"""
+        # Draw directly on screen
         self.screen.fill(COLORS['BLACK'])
         
-        # 渲染玩家
+        # Render players
         for player_id, player in self.players.items():
             if not player.is_alive:
                 continue
                 
-            pos = player.position  # 使用单一位置源
+            pos = player.position  # Use single position source
             color = COLORS['GREEN'] if player_id == self.player_id else COLORS['BLUE']
             
-            # 绘制坦克
+            # Draw tank
             tank_rect = pygame.Rect(pos['x'] - 15, pos['y'] - 15, 30, 30)
             pygame.draw.rect(self.screen, color, tank_rect)
             
-            # 如果是本地玩家，添加特殊标识
+            # If local player, add special marker
             if player_id == self.player_id:
                 pygame.draw.rect(self.screen, COLORS['ORANGE'], tank_rect, 3)
             
-            # 绘制玩家名称
+            # Draw player name
             name_text = self.small_font.render(player.name, True, COLORS['WHITE'])
             name_rect = name_text.get_rect(center=(pos['x'], pos['y'] - 25))
             self.screen.blit(name_text, name_rect)
             
-            # 绘制血条
+            # Draw health bar
             if player.health < player.max_health:
                 health_ratio = player.health / player.max_health
                 health_width = 30
                 health_height = 4
                 
-                # 背景
+                # Background
                 health_bg = pygame.Rect(pos['x'] - 15, pos['y'] - 35, health_width, health_height)
                 pygame.draw.rect(self.screen, COLORS['RED'], health_bg)
                 
-                # 血量
+                # Health
                 health_fg = pygame.Rect(pos['x'] - 15, pos['y'] - 35, 
                                       health_width * health_ratio, health_height)
                 pygame.draw.rect(self.screen, COLORS['GREEN'], health_fg)
         
-        # 渲染子弹
+        # Render bullets
         for bullet in self.bullets.values():
             pos = bullet.position
             pygame.draw.circle(self.screen, COLORS['YELLOW'], 
                              (int(pos['x']), int(pos['y'])), 4)
-            # 子弹中心点
+            # Bullet center point
             pygame.draw.circle(self.screen, COLORS['WHITE'], 
                              (int(pos['x']), int(pos['y'])), 2)
         
-        # 渲染 UI
+        # Render UI
         self.render_ui()
         
         pygame.display.flip()
         
-        # 更新 FPS 计数
+        # Update FPS count
         self.update_fps_counter()
     
     def render_ui(self):
-        """渲染 UI 信息"""
+        """Render UI information"""
         y_offset = 10
         
-        # 连接状态
+        # Connection status
         status_text = "Connected" if self.connected else "Disconnected"
         status_color = COLORS['GREEN'] if self.connected else COLORS['RED']
         status_surface = self.font.render(f"Status: {status_text}", True, status_color)
         self.screen.blit(status_surface, (10, y_offset))
         y_offset += 25
         
-        # 玩家信息
+        # Player info
         if self.player_id:
             player_text = f"Player: {self.player_name}"
             player_surface = self.font.render(player_text, True, COLORS['WHITE'])
             self.screen.blit(player_surface, (10, y_offset))
             y_offset += 25
         
-        # 网络延迟
+        # Network latency
         ping_color = COLORS['GREEN'] if self.current_ping < 50 else COLORS['ORANGE'] if self.current_ping < 100 else COLORS['RED']
         ping_text = f"Ping: {self.current_ping}ms"
         ping_surface = self.font.render(ping_text, True, ping_color)
         self.screen.blit(ping_surface, (10, y_offset))
         y_offset += 25
         
-        # FPS 显示
+        # FPS display
         fps_color = COLORS['GREEN'] if self.fps_counter >= 55 else COLORS['ORANGE'] if self.fps_counter >= 30 else COLORS['RED']
         fps_text = f"FPS: {self.fps_counter}"
         fps_surface = self.font.render(fps_text, True, fps_color)
         self.screen.blit(fps_surface, (10, y_offset))
         y_offset += 25
         
-        # 游戏统计
+        # Game statistics
         stats_text = f"Players: {len(self.players)} | Bullets: {len(self.bullets)}"
         stats_surface = self.font.render(stats_text, True, COLORS['WHITE'])
         self.screen.blit(stats_surface, (10, y_offset))
         y_offset += 25
         
-        # 优化信息
+        # Optimization info
         optimization_text = "✨ PERFECT CLIENT"
         opt_surface = self.big_font.render(optimization_text, True, COLORS['CYAN'])
         self.screen.blit(opt_surface, (10, y_offset))
@@ -794,14 +830,14 @@ class GameClient:
         smooth_surface = self.small_font.render(smooth_info, True, COLORS['CYAN'])
         self.screen.blit(smooth_surface, (10, y_offset))
         
-        # 位置信息（调试）
+        # Position info (debug)
         if self.player_id and self.player_id in self.players:
             pos = self.players[self.player_id].position
             pos_text = f"Position: ({pos['x']:.1f}, {pos['y']:.1f})"
             pos_surface = self.small_font.render(pos_text, True, COLORS['GRAY'])
             self.screen.blit(pos_surface, (10, y_offset + 25))
         
-        # 控制说明
+        # Control instructions
         controls = [
             "WASD: Move",
             "Mouse: Aim & Shoot",
@@ -813,51 +849,51 @@ class GameClient:
             self.screen.blit(control_surface, (SCREEN_WIDTH - 150, 10 + i * 20))
 
     def render_in_game_ui(self):
-        """渲染游戏中的UI信息"""
+        """Render in-game UI information"""
         y_offset = 10
         
-        # 连接状态
+        # Connection status
         status_text = "Connected" if self.connected else "Disconnected"
         status_color = COLORS['GREEN'] if self.connected else COLORS['RED']
         status_surface = self.font.render(f"Status: {status_text}", True, status_color)
         self.screen.blit(status_surface, (10, y_offset))
         y_offset += 25
         
-        # 玩家信息
+        # Player info
         if self.player_id:
             player_text = f"Player: {self.player_name}"
             player_surface = self.font.render(player_text, True, COLORS['WHITE'])
             self.screen.blit(player_surface, (10, y_offset))
             y_offset += 25
         
-        # 网络延迟
+        # Network latency
         ping_color = COLORS['GREEN'] if self.current_ping < 50 else COLORS['ORANGE'] if self.current_ping < 100 else COLORS['RED']
         ping_text = f"Ping: {self.current_ping}ms"
         ping_surface = self.font.render(ping_text, True, ping_color)
         self.screen.blit(ping_surface, (10, y_offset))
         y_offset += 25
         
-        # FPS 显示
+        # FPS display
         fps_color = COLORS['GREEN'] if self.fps_counter >= 55 else COLORS['ORANGE'] if self.fps_counter >= 30 else COLORS['RED']
         fps_text = f"FPS: {self.fps_counter}"
         fps_surface = self.font.render(fps_text, True, fps_color)
         self.screen.blit(fps_surface, (10, y_offset))
         y_offset += 25
         
-        # 游戏统计
+        # Game statistics
         stats_text = f"Players: {len(self.players)} | Bullets: {len(self.bullets)}"
         stats_surface = self.font.render(stats_text, True, COLORS['WHITE'])
         self.screen.blit(stats_surface, (10, y_offset))
         y_offset += 25
         
-        # 位置信息（调试）
+        # Position info (debug)
         if self.player_id and self.player_id in self.players:
             pos = self.players[self.player_id].position
             pos_text = f"Position: ({pos['x']:.1f}, {pos['y']:.1f})"
             pos_surface = self.small_font.render(pos_text, True, COLORS['GRAY'])
             self.screen.blit(pos_surface, (10, y_offset))
         
-        # 控制说明
+        # Control instructions
         controls = [
             "WASD: Move",
             "Mouse: Aim & Shoot",
@@ -869,61 +905,61 @@ class GameClient:
             self.screen.blit(control_surface, (SCREEN_WIDTH - 150, 10 + i * 20))
     
     def render_game_world(self):
-        """渲染游戏世界（坦克、子弹等）"""
-        # 渲染玩家
+        """Render game world (tanks, bullets, etc.)"""
+        # Render players
         for player_id, player in self.players.items():
             if not player.is_alive:
                 continue
                 
-            pos = player.position  # 使用单一位置源
+            pos = player.position  # Use single position source
             color = COLORS['GREEN'] if player_id == self.player_id else COLORS['BLUE']
             
-            # 绘制坦克
+            # Draw tank
             tank_rect = pygame.Rect(pos['x'] - 15, pos['y'] - 15, 30, 30)
             pygame.draw.rect(self.screen, color, tank_rect)
             
-            # 如果是本地玩家，添加特殊标识
+            # If local player, add special marker
             if player_id == self.player_id:
                 pygame.draw.rect(self.screen, COLORS['ORANGE'], tank_rect, 3)
             
-            # 绘制玩家名称
+            # Draw player name
             name_text = self.small_font.render(player.name, True, COLORS['WHITE'])
             name_rect = name_text.get_rect(center=(pos['x'], pos['y'] - 25))
             self.screen.blit(name_text, name_rect)
             
-            # 绘制血条
+            # Draw health bar
             if player.health < player.max_health:
                 health_ratio = player.health / player.max_health
                 health_width = 30
                 health_height = 4
                 
-                # 背景
+                # Background
                 health_bg = pygame.Rect(pos['x'] - 15, pos['y'] - 35, health_width, health_height)
                 pygame.draw.rect(self.screen, COLORS['RED'], health_bg)
                 
-                # 血量
+                # Health
                 health_fg = pygame.Rect(pos['x'] - 15, pos['y'] - 35, 
                                       health_width * health_ratio, health_height)
                 pygame.draw.rect(self.screen, COLORS['GREEN'], health_fg)
         
-        # 渲染子弹
+        # Render bullets
         for bullet in self.bullets.values():
             pos = bullet.position
             pygame.draw.circle(self.screen, COLORS['YELLOW'], 
                              (int(pos['x']), int(pos['y'])), 4)
-            # 子弹中心点
+            # Bullet center point
             pygame.draw.circle(self.screen, COLORS['WHITE'], 
                              (int(pos['x']), int(pos['y'])), 2)
 
     def update_room_display(self, room_data: Dict[str, Any]):
-        """更新房间显示（供消息处理器调用）"""
+        """Update room display (called by message handlers)"""
         room_lobby_state = self.state_manager.states.get(GameStateType.ROOM_LOBBY)
         if room_lobby_state and hasattr(room_lobby_state, 'update_room'):
             room_lobby_state.update_room(room_data)
 
 
 async def game_loop(client: GameClient):
-    """完美游戏主循环 - 现在使用状态机"""
+    """Perfect game main loop - now uses state machine"""
     last_ping_time = 0
     ping_interval = 2.0
     
@@ -934,95 +970,95 @@ async def game_loop(client: GameClient):
     
     while running:
         current_time = time.time()
-        dt = client.clock.get_time() / 1000.0  # 转换为秒
+        dt = client.clock.get_time() / 1000.0  # Convert to seconds
         
-        # 处理 PyGame 事件
+        # Handle PyGame events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    # ESC 键的处理交给状态机
+                    # ESC key handling delegated to state machine
                     if not client.state_manager.handle_event(event):
-                        # 如果状态机没有处理，就退出游戏
+                        # If state machine didn't handle it, exit game
                         running = False
                 else:
-                    # 其他按键事件交给状态机处理
+                    # Other key events delegated to state machine
                     client.state_manager.handle_event(event)
-                    # 如果在游戏状态中，也要处理传统的输入
+                    # If in game state, also handle traditional input
                     current_state = client.state_manager.get_current_state_type()
                     if current_state == GameStateType.IN_GAME:
                         client.handle_input(event)
             elif event.type == pygame.KEYUP:
-                # 按键释放事件
+                # Key release events
                 client.state_manager.handle_event(event)
                 current_state = client.state_manager.get_current_state_type()
                 if current_state == GameStateType.IN_GAME:
                     client.handle_input(event)
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                # 鼠标点击事件
+                # Mouse click events
                 client.state_manager.handle_event(event)
                 current_state = client.state_manager.get_current_state_type()
                 if current_state == GameStateType.IN_GAME:
                     client.handle_input(event)
             elif event.type == pygame.MOUSEMOTION:
-                # 鼠标移动事件
+                # Mouse movement events
                 client.state_manager.handle_event(event)
                 current_state = client.state_manager.get_current_state_type()
                 if current_state == GameStateType.IN_GAME:
                     client.handle_input(event)
             else:
-                # 所有其他事件都交给状态机处理
+                # All other events delegated to state machine
                 client.state_manager.handle_event(event)
         
-        # 更新状态机
+        # Update state machine
         client.state_manager.update(dt)
         
-        # 只有在游戏状态中才处理网络和游戏逻辑
+        # Only handle network and game logic when in game state
         current_state = client.state_manager.get_current_state_type()
         if current_state == GameStateType.IN_GAME and client.connected:
-            # 更新本地玩家（与服务器相同算法）
+            # Update local player (same algorithm as server)
             client.update_local_player(dt)
             
-            # 发送移动更新（智能发送）
+            # Send movement updates (smart send)
             await client.send_movement_if_changed()
             
-            # 处理射击
+            # Handle shooting
             if client.input_state['mouse_clicked']:
                 await client.send_shoot()
             
-            # 发送 ping
+            # Send ping
             if current_time - last_ping_time > ping_interval:
                 await client.send_ping()
                 last_ping_time = current_time
             
-            # 更新游戏对象
+            # Update game objects
             client.update_game_objects(dt)
         
-        # 渲染当前状态
+        # Render current state
         client.state_manager.render(client.screen)
         
-        # 在游戏状态中渲染额外的UI信息
+        # Render additional UI info in game state
         if current_state == GameStateType.IN_GAME:
             client.render_in_game_ui()
         
         pygame.display.flip()
         client.clock.tick(FPS)
         
-        # 更新 FPS 计数
+        # Update FPS count
         client.update_fps_counter()
         
-        # 让出控制权给其他协程
+        # Yield control to other coroutines
         await asyncio.sleep(0.001)
     
-    # 断开连接
+    # Disconnect
     await client.disconnect()
     pygame.quit()
 
 
 def determine_server_url():
-    """确定服务器URL - 解析命令行参数并智能选择服务器"""
-    # 解析命令行参数
+    """Determine server URL - parse command line arguments and intelligently choose server"""
+    # Parse command line arguments
     parser = argparse.ArgumentParser(description='Perfect Tank Game Client')
     parser.add_argument('--server', '-s', type=str, 
                        help='Server URL (e.g., ws://192.168.1.100:8765)')
@@ -1034,35 +1070,35 @@ def determine_server_url():
                        help='Scan local network for available servers')
     args = parser.parse_args()
     
-    # 如果用户要求扫描网络
+    # If user requests network scan
     if args.scan:
         display_connection_help()
-        return None  # 表示程序应该退出
+        return None  # Indicates program should exit
     
-    # 确定服务器URL
+    # Determine server URL
     if args.server:
         server_url = args.server
     elif args.host:
         port = args.port or SERVER_PORT
         server_url = f"ws://{args.host}:{port}"
     else:
-        # 智能默认连接：先扫描网络寻找服务器
+        # Smart default connection: first scan network for servers
         print("🔍 No server specified, scanning for available servers...")
         available_servers = scan_local_servers()
         
         if available_servers:
-            # 优先选择非本机的服务器
+            # Prioritize non-local servers
             remote_servers = [s for s in available_servers if s != DEFAULT_LOCAL_IP]
             if remote_servers:
                 chosen_server = remote_servers[0]
                 server_url = f"ws://{chosen_server}:{SERVER_PORT}"
                 print(f"🎯 Auto-selected remote server: {chosen_server}")
             else:
-                # 只有本机服务器可用
+                # Only local server available
                 server_url = f"ws://{available_servers[0]}:{SERVER_PORT}"
                 print(f"🏠 Auto-selected local server: {available_servers[0]}")
         else:
-            # 没有找到服务器，使用本机IP作为fallback
+            # No servers found, use local IP as fallback
             server_url = DEFAULT_SERVER_URL
             print(f"⚠️ No servers found, trying local server: {DEFAULT_LOCAL_IP}")
             print("💡 If this fails, make sure server is running or use --host [SERVER_IP]")
@@ -1071,12 +1107,12 @@ def determine_server_url():
 
 
 def scan_local_servers(port: int = 8765) -> List[str]:
-    """扫描局域网内的游戏服务器"""
+    """Scan game servers in local network"""
     local_ip = get_local_ip()
     if local_ip == "127.0.0.1":
         return []
     
-    # 获取网络段
+    # Get network segment
     ip_parts = local_ip.split('.')
     network_base = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}"
     
@@ -1084,21 +1120,21 @@ def scan_local_servers(port: int = 8765) -> List[str]:
     
     print(f"🔍 Scanning network {network_base}.x for game servers...")
     
-    # 扫描常见的IP范围（简化版，只扫描部分IP）
+    # Scan common IP ranges (simplified version, only scan some IPs)
     scan_ips = [
-        f"{network_base}.1",    # 路由器
-        f"{network_base}.100",  # 常见服务器IP
+        f"{network_base}.1",    # Router
+        f"{network_base}.100",  # Common server IP
         f"{network_base}.101", 
         f"{network_base}.102",
         f"{network_base}.110",
         f"{network_base}.200",
-        local_ip,  # 本机
+        local_ip,  # Local machine
     ]
     
     for ip in scan_ips:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(0.5)  # 500ms超时
+            s.settimeout(0.5)  # 500ms timeout
             result = s.connect_ex((ip, port))
             s.close()
             
@@ -1111,7 +1147,7 @@ def scan_local_servers(port: int = 8765) -> List[str]:
     return available_servers
 
 def display_connection_help():
-    """显示连接帮助信息"""
+    """Display connection help information"""
     local_ip = get_local_ip()
     print("=" * 40)
     print(f"📍 Your machine IP: {local_ip}")
@@ -1138,7 +1174,7 @@ def display_connection_help():
 
 
 async def main():
-    """主函数 - 现在启动状态机而不是直接连接服务器"""
+    """Main function - now starts state machine instead of directly connecting to server"""
     print("✨ Starting Perfect Tank Game Client with State Machine...")
     print("=" * 50)
     print(f"  • Fixed window size ({SCREEN_WIDTH}x{SCREEN_HEIGHT})")
@@ -1151,11 +1187,11 @@ async def main():
         print("❌ No server found, exiting...")
         return
     
-    # 创建客户端（但不立即连接）
+    # Create client (but don't connect immediately)
     client = GameClient(server_url)
     
     try:
-        # 启动状态机游戏循环
+        # Start state machine game loop
         await game_loop(client)
     
     except KeyboardInterrupt:

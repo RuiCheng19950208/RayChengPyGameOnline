@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-坦克游戏消息系统 - 基于 Kable 项目的消息驱动架构
+Tank game message system - based on Kable project's message-driven architecture
 
-所有前后端交互都通过标准化的 WebSocket 消息进行，
-确保类型安全和可扩展性。
+All frontend-backend interactions are done through standardized WebSocket messages,
+ensuring type safety and extensibility.
 """
 
 import time
@@ -15,16 +15,16 @@ import json
 
 
 class GameMessageType(str, Enum):
-    """所有可能的游戏消息类型"""
+    """All possible game message types"""
     
-    # 玩家动作消息
+    # Player action messages
     PLAYER_MOVE = "player_move"
     PLAYER_STOP = "player_stop"
     PLAYER_SHOOT = "player_shoot"
     PLAYER_JOIN = "player_join"
     PLAYER_LEAVE = "player_leave"
     
-    # 游戏状态消息
+    # Game state messages
     GAME_STATE_UPDATE = "game_state_update"
     PLAYER_POSITION_UPDATE = "player_position_update"
     BULLET_FIRED = "bullet_fired"
@@ -34,8 +34,10 @@ class GameMessageType(str, Enum):
     PLAYER_DESTROYED = "player_destroyed"
     PLAYER_DEATH = "player_death"
     COLLISION = "collision"
+    GAME_VICTORY = "game_victory"
+    GAME_DEFEAT = "game_defeat"
     
-    # 房间管理消息
+    # Room management messages
     ROOM_JOIN = "room_join"
     ROOM_LEAVE = "room_leave"
     ROOM_LIST = "room_list"
@@ -51,7 +53,7 @@ class GameMessageType(str, Enum):
     SLOT_CHANGE_REQUEST = "slot_change_request"
     SLOT_CHANGED = "slot_changed"
     
-    # 系统消息
+    # System messages
     CONNECTION_ACK = "connection_ack"
     PING = "ping"
     PONG = "pong"
@@ -61,37 +63,37 @@ class GameMessageType(str, Enum):
 
 @dataclass
 class BaseGameMessage(ABC):
-    """所有游戏消息的基类"""
+    """Base class for all game messages"""
     
     def __post_init__(self):
-        """初始化时间戳"""
+        """Initialize timestamp"""
         if not hasattr(self, "timestamp") or self.timestamp is None:
             self.timestamp = time.time()
     
     @property
     @abstractmethod
     def type(self) -> GameMessageType:
-        """返回消息类型"""
+        """Return message type"""
         pass
     
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典用于传输"""
+        """Convert to dictionary for transmission"""
         data = asdict(self)
         data["type"] = self.type.value
         return data
     
     def to_json(self) -> str:
-        """转换为 JSON 字符串"""
+        """Convert to JSON string"""
         return json.dumps(self.to_dict())
 
 
 # ===============================
-# 玩家动作消息
+# Player action messages
 # ===============================
 
 @dataclass
 class PlayerMoveMessage(BaseGameMessage):
-    """玩家移动消息"""
+    """Player movement message"""
     
     player_id: str
     direction: Dict[str, bool]  # {"w": True, "a": False, "s": False, "d": True}
@@ -105,10 +107,10 @@ class PlayerMoveMessage(BaseGameMessage):
 
 @dataclass
 class PlayerStopMessage(BaseGameMessage):
-    """玩家停止移动消息"""
+    """Player stop movement message"""
     
     player_id: str
-    position: Dict[str, float]  # 最终位置
+    position: Dict[str, float]  # Final position
     timestamp: Optional[float] = None
     
     @property
@@ -118,11 +120,11 @@ class PlayerStopMessage(BaseGameMessage):
 
 @dataclass
 class PlayerShootMessage(BaseGameMessage):
-    """玩家射击消息"""
+    """Player shooting message"""
     
     player_id: str
-    position: Dict[str, float]  # 射击起始位置
-    direction: Dict[str, float]  # 射击方向向量
+    position: Dict[str, float]  # Shooting start position
+    direction: Dict[str, float]  # Shooting direction vector
     bullet_id: str
     timestamp: Optional[float] = None
     
@@ -133,7 +135,7 @@ class PlayerShootMessage(BaseGameMessage):
 
 @dataclass
 class PlayerJoinMessage(BaseGameMessage):
-    """玩家加入游戏消息"""
+    """Player join game message"""
     
     player_id: str
     player_name: str
@@ -148,7 +150,7 @@ class PlayerJoinMessage(BaseGameMessage):
 
 @dataclass
 class PlayerLeaveMessage(BaseGameMessage):
-    """玩家离开游戏消息"""
+    """Player leave game message"""
     
     player_id: str
     reason: str = "normal"  # "normal", "timeout", "kicked"
@@ -160,15 +162,15 @@ class PlayerLeaveMessage(BaseGameMessage):
 
 
 # ===============================
-# 游戏状态消息
+# Game state messages
 # ===============================
 
 @dataclass
 class GameStateUpdateMessage(BaseGameMessage):
-    """完整游戏状态更新消息"""
+    """Complete game state update message"""
     
-    players: List[Dict[str, Any]]  # 所有玩家状态
-    bullets: List[Dict[str, Any]]  # 所有子弹状态
+    players: List[Dict[str, Any]]  # All player states
+    bullets: List[Dict[str, Any]]  # All bullet states
     game_time: float
     frame_id: int
     timestamp: Optional[float] = None
@@ -180,7 +182,7 @@ class GameStateUpdateMessage(BaseGameMessage):
 
 @dataclass
 class PlayerPositionUpdateMessage(BaseGameMessage):
-    """玩家位置更新消息（轻量级）"""
+    """Player position update message (lightweight)"""
     
     player_id: str
     position: Dict[str, float]
@@ -195,7 +197,7 @@ class PlayerPositionUpdateMessage(BaseGameMessage):
 
 @dataclass
 class BulletFiredMessage(BaseGameMessage):
-    """子弹发射消息"""
+    """Bullet fired message"""
     
     bullet_id: str
     owner_id: str
@@ -211,10 +213,10 @@ class BulletFiredMessage(BaseGameMessage):
 
 @dataclass
 class BulletHitMessage(BaseGameMessage):
-    """子弹击中消息"""
+    """Bullet hit message"""
     
     bullet_id: str
-    target_id: str  # 被击中的玩家ID
+    target_id: str  # Hit player ID
     hit_position: Dict[str, float]
     damage_dealt: int
     timestamp: Optional[float] = None
@@ -226,7 +228,7 @@ class BulletHitMessage(BaseGameMessage):
 
 @dataclass
 class BulletDestroyedMessage(BaseGameMessage):
-    """子弹销毁消息"""
+    """Bullet destroyed message"""
     
     bullet_id: str
     reason: str  # "expired", "collision", "boundary"
@@ -239,7 +241,7 @@ class BulletDestroyedMessage(BaseGameMessage):
 
 @dataclass
 class CollisionMessage(BaseGameMessage):
-    """碰撞事件消息"""
+    """Collision event message"""
     
     bullet_id: str
     target_player_id: str
@@ -255,7 +257,7 @@ class CollisionMessage(BaseGameMessage):
 
 @dataclass
 class PlayerDeathMessage(BaseGameMessage):
-    """玩家死亡事件消息"""
+    """Player death event message"""
     
     player_id: str
     killer_id: str
@@ -268,8 +270,41 @@ class PlayerDeathMessage(BaseGameMessage):
 
 
 @dataclass
+class GameVictoryMessage(BaseGameMessage):
+    """Game victory message - sent to the winner"""
+    
+    winner_player_id: str
+    winner_player_name: str
+    room_id: str
+    game_duration: float
+    total_players: int
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.GAME_VICTORY
+
+
+@dataclass
+class GameDefeatMessage(BaseGameMessage):
+    """Game defeat message - sent to eliminated players"""
+    
+    eliminated_player_id: str
+    eliminated_player_name: str
+    killer_id: str
+    killer_name: str
+    room_id: str
+    survival_time: float
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.GAME_DEFEAT
+
+
+@dataclass
 class PlayerHitMessage(BaseGameMessage):
-    """玩家被击中消息"""
+    """Player hit message"""
     
     player_id: str
     attacker_id: str
@@ -285,7 +320,7 @@ class PlayerHitMessage(BaseGameMessage):
 
 @dataclass
 class PlayerDestroyedMessage(BaseGameMessage):
-    """玩家被摧毁消息"""
+    """Player destroyed message"""
     
     player_id: str
     killer_id: str
@@ -299,12 +334,12 @@ class PlayerDestroyedMessage(BaseGameMessage):
 
 
 # ===============================
-# 房间管理消息
+# Room management messages
 # ===============================
 
 @dataclass
 class RoomJoinMessage(BaseGameMessage):
-    """加入房间消息"""
+    """Join room message"""
     
     player_id: str
     room_id: str
@@ -318,7 +353,7 @@ class RoomJoinMessage(BaseGameMessage):
 
 @dataclass
 class RoomLeaveMessage(BaseGameMessage):
-    """离开房间消息"""
+    """Leave room message"""
     
     player_id: str
     room_id: str
@@ -331,9 +366,9 @@ class RoomLeaveMessage(BaseGameMessage):
 
 @dataclass
 class RoomListMessage(BaseGameMessage):
-    """房间列表消息"""
+    """Room list message"""
     
-    rooms: List[Dict[str, Any]]  # 房间信息列表
+    rooms: List[Dict[str, Any]]  # Room information list
     total_players: int
     timestamp: Optional[float] = None
     
@@ -344,7 +379,7 @@ class RoomListMessage(BaseGameMessage):
 
 @dataclass
 class RoomListRequestMessage(BaseGameMessage):
-    """请求房间列表消息"""
+    """Request room list message"""
     
     client_id: str
     timestamp: Optional[float] = None
@@ -356,7 +391,7 @@ class RoomListRequestMessage(BaseGameMessage):
 
 @dataclass
 class RoomCreatedMessage(BaseGameMessage):
-    """房间创建消息"""
+    """Room created message"""
     
     room_id: str
     room_name: str
@@ -372,7 +407,7 @@ class RoomCreatedMessage(BaseGameMessage):
 
 @dataclass
 class CreateRoomRequestMessage(BaseGameMessage):
-    """创建房间请求消息"""
+    """Create room request message"""
     
     room_name: str
     max_players: int
@@ -388,7 +423,7 @@ class CreateRoomRequestMessage(BaseGameMessage):
 
 @dataclass
 class RoomStartGameMessage(BaseGameMessage):
-    """房间开始游戏消息"""
+    """Room start game message"""
     
     room_id: str
     host_player_id: str
@@ -401,7 +436,7 @@ class RoomStartGameMessage(BaseGameMessage):
 
 @dataclass
 class RoomEndGameMessage(BaseGameMessage):
-    """房间结束游戏消息"""
+    """Room end game message"""
     
     room_id: str
     reason: str = "host_ended"  # "host_ended", "all_players_dead", "timeout"
@@ -414,9 +449,9 @@ class RoomEndGameMessage(BaseGameMessage):
 
 @dataclass
 class RoomUpdateMessage(BaseGameMessage):
-    """房间状态更新消息"""
+    """Room state update message"""
     
-    room_data: Dict[str, Any]  # 完整的房间数据
+    room_data: Dict[str, Any]  # Complete room data
     timestamp: Optional[float] = None
     
     @property
@@ -426,7 +461,7 @@ class RoomUpdateMessage(BaseGameMessage):
 
 @dataclass
 class RoomDeletedMessage(BaseGameMessage):
-    """房间删除消息"""
+    """Room deleted message"""
     
     room_id: str
     reason: str = "host_left"  # "host_left", "empty", "expired"
@@ -439,10 +474,10 @@ class RoomDeletedMessage(BaseGameMessage):
 
 @dataclass
 class RoomDisbandedMessage(BaseGameMessage):
-    """房间解散消息 - 房主主动解散房间"""
+    """Room disbanded message - host actively disbands room"""
     
     room_id: str
-    disbanded_by: str  # 解散者的player_id
+    disbanded_by: str  # player_id of disbander
     reason: str = "host_quit"  # "host_quit", "host_disconnected"
     timestamp: Optional[float] = None
     
@@ -453,9 +488,9 @@ class RoomDisbandedMessage(BaseGameMessage):
 
 @dataclass
 class ServerListMessage(BaseGameMessage):
-    """服务器列表消息"""
+    """Server list message"""
     
-    servers: List[Dict[str, Any]]  # 服务器信息列表
+    servers: List[Dict[str, Any]]  # Server information list
     timestamp: Optional[float] = None
     
     @property
@@ -465,7 +500,7 @@ class ServerListMessage(BaseGameMessage):
 
 @dataclass
 class SlotChangeRequestMessage(BaseGameMessage):
-    """槽位切换请求消息"""
+    """Slot change request message"""
     
     player_id: str
     target_slot: int
@@ -479,7 +514,7 @@ class SlotChangeRequestMessage(BaseGameMessage):
 
 @dataclass
 class SlotChangedMessage(BaseGameMessage):
-    """槽位切换完成消息"""
+    """Slot change completed message"""
     
     player_id: str
     old_slot: int
@@ -493,12 +528,12 @@ class SlotChangedMessage(BaseGameMessage):
 
 
 # ===============================
-# 系统消息
+# System messages
 # ===============================
 
 @dataclass
 class ConnectionAckMessage(BaseGameMessage):
-    """连接确认消息"""
+    """Connection acknowledgment message"""
     
     client_id: str
     server_time: float
@@ -513,7 +548,7 @@ class ConnectionAckMessage(BaseGameMessage):
 
 @dataclass
 class PingMessage(BaseGameMessage):
-    """Ping 消息"""
+    """Ping message"""
     
     client_id: str
     sequence: int
@@ -526,7 +561,7 @@ class PingMessage(BaseGameMessage):
 
 @dataclass
 class PongMessage(BaseGameMessage):
-    """Pong 消息"""
+    """Pong message"""
     
     client_id: str
     sequence: int
@@ -540,7 +575,7 @@ class PongMessage(BaseGameMessage):
 
 @dataclass
 class ErrorMessage(BaseGameMessage):
-    """错误消息"""
+    """Error message"""
     
     error_code: str
     error_message: str
@@ -554,7 +589,7 @@ class ErrorMessage(BaseGameMessage):
 
 @dataclass
 class DebugMessage(BaseGameMessage):
-    """调试消息"""
+    """Debug message"""
     
     debug_type: str
     data: Dict[str, Any]
@@ -566,10 +601,10 @@ class DebugMessage(BaseGameMessage):
 
 
 # ===============================
-# 消息工厂和工具函数
+# Message factory and utility functions
 # ===============================
 
-# 消息类型映射
+# Message type mapping
 MESSAGE_TYPE_MAP = {
     GameMessageType.PLAYER_MOVE: PlayerMoveMessage,
     GameMessageType.PLAYER_STOP: PlayerStopMessage,
@@ -583,6 +618,8 @@ MESSAGE_TYPE_MAP = {
     GameMessageType.BULLET_DESTROYED: BulletDestroyedMessage,
     GameMessageType.COLLISION: CollisionMessage,
     GameMessageType.PLAYER_DEATH: PlayerDeathMessage,
+    GameMessageType.GAME_VICTORY: GameVictoryMessage,
+    GameMessageType.GAME_DEFEAT: GameDefeatMessage,
     GameMessageType.PLAYER_HIT: PlayerHitMessage,
     GameMessageType.PLAYER_DESTROYED: PlayerDestroyedMessage,
     GameMessageType.ROOM_JOIN: RoomJoinMessage,
@@ -604,7 +641,7 @@ MESSAGE_TYPE_MAP = {
 
 
 def parse_message(message_data: Union[str, Dict[str, Any]]) -> Optional[BaseGameMessage]:
-    """解析消息数据为消息对象"""
+    """Parse message data to message object"""
     try:
         if isinstance(message_data, str):
             data = json.loads(message_data)
@@ -618,7 +655,7 @@ def parse_message(message_data: Union[str, Dict[str, Any]]) -> Optional[BaseGame
             print(f"Unknown message type: {message_type}")
             return None
         
-        # 移除 type 字段，因为它不是数据类的字段
+        # Remove type field as it's not a dataclass field
         message_dict = {k: v for k, v in data.items() if k != "type"}
         
         return message_class(**message_dict)
@@ -629,7 +666,7 @@ def parse_message(message_data: Union[str, Dict[str, Any]]) -> Optional[BaseGame
 
 
 def create_error_message(error_code: str, error_message: str, details: Optional[Dict] = None) -> ErrorMessage:
-    """创建错误消息的便捷函数"""
+    """Convenience function to create error message"""
     return ErrorMessage(
         error_code=error_code,
         error_message=error_message,
@@ -638,19 +675,20 @@ def create_error_message(error_code: str, error_message: str, details: Optional[
 
 
 def create_debug_message(debug_type: str, data: Dict[str, Any]) -> DebugMessage:
-    """创建调试消息的便捷函数"""
+    """Convenience function to create debug message"""
     return DebugMessage(
         debug_type=debug_type,
         data=data
     )
 
 
-# 类型别名
+# Type alias
 GameMessage = Union[
     PlayerMoveMessage, PlayerStopMessage, PlayerShootMessage,
     PlayerJoinMessage, PlayerLeaveMessage, GameStateUpdateMessage,
     PlayerPositionUpdateMessage, BulletFiredMessage, BulletHitMessage,
     BulletDestroyedMessage, CollisionMessage, PlayerDeathMessage,
+    GameVictoryMessage, GameDefeatMessage,
     PlayerHitMessage, PlayerDestroyedMessage, RoomJoinMessage,
     RoomLeaveMessage, RoomListMessage, RoomCreatedMessage,
     CreateRoomRequestMessage, RoomStartGameMessage,

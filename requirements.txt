@@ -1,11 +1,10 @@
-# 坦克大战游戏项目依赖
 # Tank Battle Game Project Dependencies
 
-# 游戏引擎 - Game Engine
+# Game Engine
 pygame>=2.5.0
 
-# WebSocket 通信 - WebSocket Communication
+# WebSocket Communication
 websockets>=11.0.0
 
-# 环境变量管理 - Environment Variables
+# Environment Variables Management
 python-dotenv>=1.0.0

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-实现 WebSocket 服务器，处理所有游戏消息，管理游戏状态
+WebSocket server implementation for handling all game messages and managing game state
 """
 
 import asyncio
@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import threading
 
-# 添加共享目录到 Python 路径 - 必须在导入自定义模块之前
+# Add shared directory to Python path - must be before importing custom modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'shared'))
 
 from tank_game_messages import (
@@ -30,35 +30,36 @@ from tank_game_messages import (
     PingMessage, PongMessage, ErrorMessage, DebugMessage,
     create_error_message, create_debug_message,
     BulletDestroyedMessage, CollisionMessage, PlayerDeathMessage,
+    GameVictoryMessage, GameDefeatMessage,
     SlotChangeRequestMessage, SlotChangedMessage, RoomStartGameMessage,
     CreateRoomRequestMessage, RoomCreatedMessage, RoomListRequestMessage,
     RoomListMessage, RoomDisbandedMessage
 )
 
-# 导入共享的实体类
+# Import shared entity classes
 from tank_game_entities import Player, Bullet, GameRoom
 
-# 加载环境变量 - 使用项目根目录的共享 .env 文件
+# Load environment variables - use shared .env file from project root
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
-# 游戏配置 - 与客户端保持一致
+# Game configuration - keep consistent with client
 SCREEN_WIDTH = int(os.getenv('SCREEN_WIDTH', 800))
 SCREEN_HEIGHT = int(os.getenv('SCREEN_HEIGHT', 600))
 FPS = int(os.getenv('FPS', 60))
-TANK_SPEED = int(os.getenv('TANK_SPEED', 300))  # 关键：与客户端相同的速度
+TANK_SPEED = int(os.getenv('TANK_SPEED', 300))  # Critical: same speed as client
 BULLET_SPEED = int(os.getenv('BULLET_SPEED', 300))
 BULLET_DAMAGE = int(os.getenv('BULLET_DAMAGE', 25))
 BULLET_LIFETIME = float(os.getenv('BULLET_LIFETIME', 5.0))
 
 
-SERVER_HOST = '0.0.0.0'  # 默认监听所有接口
+SERVER_HOST = '0.0.0.0'  # Default listen on all interfaces
 SERVER_PORT = int(os.getenv('SERVER_PORT', 8765))
 MAX_PLAYERS_PER_ROOM = int(os.getenv('MAX_PLAYERS_PER_ROOM', 8))
 
 def get_local_ip():
-    """自动获取本机局域网IP地址"""
+    """Automatically get local LAN IP address"""
     try:
-        # 方法1：连接到远程地址获取本机IP
+        # Method 1: Connect to remote address to get local IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
@@ -66,7 +67,7 @@ def get_local_ip():
         return local_ip
     except Exception:
         try:
-            # 方法2：获取主机名对应的IP
+            # Method 2: Get IP from hostname
             hostname = socket.gethostname()
             local_ip = socket.gethostbyname(hostname)
             if not local_ip.startswith('127.'):
@@ -74,7 +75,7 @@ def get_local_ip():
         except Exception:
             pass
     
-    # 方法3：遍历所有网络接口
+    # Method 3: Iterate through all network interfaces
     try:
         import subprocess
         import platform
@@ -107,7 +108,7 @@ def get_local_ip():
     return 'localhost'
 
 def display_server_info(host: str, port: int):
-    """显示服务器连接信息"""
+    """Display server connection information"""
     print("=" * 60)
     print("🎮 Tank Game Server Started Successfully!")
     print("=" * 60)
@@ -117,7 +118,7 @@ def display_server_info(host: str, port: int):
         print(f"🖥️  Server Host: {host} (listening on all interfaces)")
         print(f"🌐 Local IP: {local_ip}")
         print(f"🔌 Port: {port}")
-        print(f"📊 Status Port: {port + 1}")  # HTTP状态端口
+        print(f"📊 Status Port: {port + 1}")  # HTTP status port
         print()
         print("💻 Client Commands:")
         print(f"   • Local: python home/tank_game_client.py")
@@ -133,19 +134,19 @@ def display_server_info(host: str, port: int):
     print("=" * 60)
 
 class StatusHandler(SimpleHTTPRequestHandler):
-    """简单的HTTP状态处理器"""
+    """Simple HTTP status handler"""
     
     def __init__(self, server_instance, *args, **kwargs):
         self.server_instance = server_instance
         super().__init__(*args, **kwargs)
     
     def do_GET(self):
-        """处理GET请求"""
+        """Handle GET requests"""
         if self.path == '/status':
-            # 返回服务器状态JSON - 只计算可加入的房间
+            # Return server status JSON - only count joinable rooms
             total_players = len(self.server_instance.players)
             
-            # 只计算等待状态且有玩家的房间（可加入的房间）
+            # Only count waiting rooms with players (joinable rooms)
             joinable_rooms = [
                 r for r in self.server_instance.rooms.values() 
                 if len(r.players) > 0 and r.room_state == "waiting"
@@ -153,20 +154,20 @@ class StatusHandler(SimpleHTTPRequestHandler):
             joinable_players = sum(len(r.players) for r in joinable_rooms)
             
             status = {
-                'players': joinable_players,  # 只返回可加入房间的玩家数
+                'players': joinable_players,  # Only return players in joinable rooms
                 'max_players': MAX_PLAYERS_PER_ROOM * len(self.server_instance.rooms),
-                'rooms': len(joinable_rooms),  # 只返回可加入的房间数
+                'rooms': len(joinable_rooms),  # Only return joinable rooms
                 'server_version': '1.0.0',
                 'status': 'online'
             }
             
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')  # 允许跨域
+            self.send_header('Access-Control-Allow-Origin', '*')  # Allow CORS
             self.end_headers()
             self.wfile.write(json.dumps(status).encode())
             
-            # 详细调试信息
+            # Detailed debug information
             print(f"📊 Status query: {len(joinable_rooms)} joinable rooms, {joinable_players} joinable players")
             print(f"📊 Total rooms: {len(self.server_instance.rooms)}, Total players: {total_players}")
             for room_id, room in self.server_instance.rooms.items():
@@ -176,15 +177,15 @@ class StatusHandler(SimpleHTTPRequestHandler):
             self.end_headers()
     
     def log_message(self, format, *args):
-        """禁用HTTP日志输出"""
+        """Disable HTTP log output"""
         pass
 
 class TankGameServer:
-    """坦克游戏服务器"""
+    """Tank game server"""
     def __init__(self, host: str = None, port: int = None):
         self.host = host if host is not None else SERVER_HOST
         self.port = port if port is not None else SERVER_PORT
-        self.status_port = self.port + 1  # HTTP状态端口
+        self.status_port = self.port + 1  # HTTP status port
         self.clients: Dict[WebSocketServerProtocol, str] = {}  # websocket -> client_id
         self.players: Dict[str, Player] = {}  # player_id -> Player
         self.rooms: Dict[str, GameRoom] = {}  # room_id -> GameRoom
@@ -193,13 +194,13 @@ class TankGameServer:
         self.http_server = None
         self.http_thread = None
         
-        # 不创建默认房间 - 房间应该按需创建
+        # Don't create default room - rooms should be created on demand
         
         print(f"🎮 TankGameServer initialized on {self.host}:{self.port}")
         print(f"🎯 Game config: {SCREEN_WIDTH}x{SCREEN_HEIGHT}, Speed: {TANK_SPEED}")
     
     def start_status_server(self):
-        """启动HTTP状态服务器"""
+        """Start HTTP status server"""
         def create_handler(*args, **kwargs):
             return StatusHandler(self, *args, **kwargs)
         
@@ -213,7 +214,7 @@ class TankGameServer:
             print(f"⚠️ Failed to start status server: {e}")
     
     def stop_status_server(self):
-        """停止HTTP状态服务器"""
+        """Stop HTTP status server"""
         if self.http_server:
             self.http_server.shutdown()
             self.http_server.server_close()
@@ -221,21 +222,21 @@ class TankGameServer:
             self.http_thread.join(timeout=1.0)
     
     async def start(self):
-        """启动服务器"""
+        """Start server"""
         self.running = True
         
-        # 启动HTTP状态服务器
+        # Start HTTP status server
         self.start_status_server()
         
-        # 启动游戏循环
+        # Start game loop
         self.game_loop_task = asyncio.create_task(self.game_loop())
         
-        # 启动 WebSocket 服务器
+        # Start WebSocket server
         async with websockets.serve(self.handle_client, self.host, self.port):
-            await asyncio.Future()  # 永远运行
+            await asyncio.Future()  # Run forever
     
     async def stop(self):
-        """停止服务器"""
+        """Stop server"""
         self.running = False
         if self.game_loop_task:
             self.game_loop_task.cancel()
@@ -243,13 +244,13 @@ class TankGameServer:
         print("🛑 Server stopped")
     
     async def handle_client(self, websocket: WebSocketServerProtocol):
-        """处理客户端连接"""
+        """Handle client connections"""
         client_id = str(uuid.uuid4())
         self.clients[websocket] = client_id
         
         print(f"🔗 Client connected: {client_id}")
         
-        # 发送连接确认
+        # Send connection acknowledgment
         ack_message = ConnectionAckMessage(
             client_id=client_id,
             server_time=time.time(),
@@ -269,15 +270,15 @@ class TankGameServer:
             await self.disconnect_client(websocket, client_id)
     
     async def disconnect_client(self, websocket: WebSocketServerProtocol, client_id: str):
-        """断开客户端连接"""
+        """Disconnect client"""
         print(f"🔌 Disconnecting client {client_id}...")
         
-        # 移除玩家
+        # Remove player
         if client_id in self.players:
             player = self.players[client_id]
             player_name = player.name
             
-            # 找到玩家所在的房间并移除
+            # Find and remove player from rooms
             rooms_to_delete = []
             rooms_to_disband = []
             
@@ -285,27 +286,27 @@ class TankGameServer:
                 if client_id in room.players:
                     print(f"📤 Removing player {player_name} from room {room_id}")
                     
-                    # 检查是否为房主
+                    # Check if host
                     if room.is_host(client_id):
                         print(f"🗑️ Host {client_id} disconnected, disbanding room {room_id}")
                         
-                        # 创建房间解散消息
+                        # Create room disbanded message
                         disband_message = RoomDisbandedMessage(
                             room_id=room_id,
                             disbanded_by=client_id,
                             reason="host_disconnected"
                         )
                         
-                        # 广播给房间内其他玩家
+                        # Broadcast to other players in room
                         await self.broadcast_to_room(room_id, disband_message, exclude=client_id)
                         
-                        # 标记房间需要解散
+                        # Mark room for disbandment
                         rooms_to_disband.append(room_id)
                     else:
-                        # 普通玩家离开
+                        # Regular player leaving
                         room.remove_player(client_id)
                         
-                        # 广播玩家离开消息给房间内其他玩家
+                        # Broadcast player leave message to other players in room
                         if len(room.players) > 0:
                             leave_message = PlayerLeaveMessage(
                                 player_id=client_id,
@@ -313,14 +314,14 @@ class TankGameServer:
                             )
                             await self.broadcast_to_room(room_id, leave_message, exclude=client_id)
                         
-                        # 如果房间空了，标记为删除
+                        # If room is empty, mark for deletion
                         if len(room.players) == 0:
                             rooms_to_delete.append(room_id)
                             print(f"🗑️ Room {room_id} is empty, marking for deletion")
             
-            # 解散房主离开的房间
+            # Disband rooms where host left
             for room_id in rooms_to_disband:
-                # 移除房间内所有其他玩家
+                # Remove all other players from room
                 if room_id in self.rooms:
                     room = self.rooms[room_id]
                     remaining_players = [pid for pid in room.players.keys() if pid != client_id]
@@ -329,32 +330,32 @@ class TankGameServer:
                             del self.players[player_id]
                             print(f"📤 Removed player {player_id} due to host disconnect")
                     
-                    # 删除房间
+                    # Delete room
                     del self.rooms[room_id]
                     print(f"🗑️ Room {room_id} disbanded due to host disconnect")
             
-            # 删除其他空房间
+            # Delete other empty rooms
             for room_id in rooms_to_delete:
                 if room_id in self.rooms:
                     del self.rooms[room_id]
                     print(f"🗑️ Deleted empty room: {room_id}")
             
-            # 从玩家字典中移除
+            # Remove from players dictionary
             del self.players[client_id]
             print(f"✅ Player {player_name} ({client_id}) completely removed")
         
-        # 移除客户端
+        # Remove client
         if websocket in self.clients:
             del self.clients[websocket]
         
         print(f"🚪 Client {client_id} fully disconnected")
         
-        # 详细的房间状态调试信息
+        # Detailed room status debug info
         active_rooms = [r for r in self.rooms.values() if len(r.players) > 0]
         waiting_rooms = [r for r in self.rooms.values() if len(r.players) > 0 and r.room_state == "waiting"]
         print(f"📊 After disconnect - Active rooms: {len(active_rooms)}, Waiting rooms: {len(waiting_rooms)}, Total players: {len(self.players)}")
         
-        # 详细显示每个房间的状态（只显示有玩家的房间）
+        # Show status of each room with players
         for room_id, room in self.rooms.items():
             if len(room.players) > 0:
                 player_names = [p.name for p in room.players.values()]
@@ -364,7 +365,7 @@ class TankGameServer:
             print("📊 No rooms remaining - all rooms cleaned up successfully")
     
     async def handle_message(self, websocket: WebSocketServerProtocol, client_id: str, raw_message: str):
-        """处理客户端消息"""
+        """Handle client messages"""
         try:
             message = parse_message(raw_message)
             if not message:
@@ -372,11 +373,11 @@ class TankGameServer:
                 await self.send_message(websocket, error_msg)
                 return
             
-            # 减少日志噪音 - 只记录重要消息
+            # Reduce log noise - only log important messages
             if message.type not in [GameMessageType.PING, GameMessageType.PLAYER_MOVE]:
                 print(f"📨 Received {message.type} from {client_id}")
             
-            # 路由消息到对应的处理器
+            # Route message to corresponding handler
             await self.route_message(websocket, client_id, message)
             
         except Exception as e:
@@ -385,7 +386,7 @@ class TankGameServer:
             await self.send_message(websocket, error_msg)
     
     async def route_message(self, websocket: WebSocketServerProtocol, client_id: str, message: GameMessage):
-        """路由消息到对应的处理器"""
+        """Route messages to corresponding handlers"""
         handlers = {
             GameMessageType.PLAYER_JOIN: self.handle_player_join,
             GameMessageType.PLAYER_LEAVE: self.handle_player_leave,
@@ -407,8 +408,8 @@ class TankGameServer:
             print(f"⚠️ No handler for message type: {message.type}")
     
     async def handle_player_join(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerJoinMessage):
-        """处理玩家加入"""
-        # 创建玩家 - 使用共享实体类的新接口
+        """Handle player join"""
+        # Create player - using new interface of shared entity class
         player_data = {
             'player_id': client_id,
             'name': message.player_name
@@ -416,15 +417,15 @@ class TankGameServer:
         player = Player(player_data, websocket)
         self.players[client_id] = player
         
-        # 确定要加入的房间ID
+        # Determine target room ID
         target_room_id = message.room_id
         if not target_room_id:
-            # 如果没有指定房间ID，拒绝加入
+            # If no room ID specified, reject join
             error_msg = create_error_message("NO_ROOM_SPECIFIED", "No room ID specified")
             await self.send_message(websocket, error_msg)
             return
         
-        # 确保目标房间存在
+        # Ensure target room exists
         if target_room_id not in self.rooms:
             error_msg = create_error_message("ROOM_NOT_FOUND", f"Room {target_room_id} not found")
             await self.send_message(websocket, error_msg)
@@ -434,10 +435,10 @@ class TankGameServer:
         if room.add_player(player):
             print(f"👤 Player {message.player_name} ({client_id}) joined room {target_room_id} slot {player.slot_index}")
             
-            # 广播玩家加入消息给房间内其他玩家
+            # Broadcast player join message to other players in room
             await self.broadcast_to_room(target_room_id, message, exclude=client_id)
             
-            # 发送当前游戏状态给新玩家（包含所有玩家的槽位信息）
+            # Send current game state to new player (including all players' slot info)
             state_message = GameStateUpdateMessage(
                 players=[p.to_dict() for p in room.players.values()],
                 bullets=[b.to_dict() for b in room.bullets.values()],
@@ -446,10 +447,10 @@ class TankGameServer:
             )
             await self.send_message(websocket, state_message)
             
-            # 广播房间更新给所有玩家
+            # Broadcast room update to all players
             room_update_message = GameStateUpdateMessage(
                 players=[p.to_dict() for p in room.players.values()],
-                bullets=[],  # 房间大厅不需要子弹信息
+                bullets=[],  # Room lobby doesn't need bullet info
                 game_time=room.game_time,
                 frame_id=room.frame_id
             )
@@ -459,31 +460,31 @@ class TankGameServer:
             await self.send_message(websocket, error_msg)
     
     async def handle_player_leave(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerLeaveMessage):
-        """处理玩家主动离开消息"""
+        """Handle player active leave message"""
         print(f"👋 Player {client_id} is leaving (reason: {message.reason})")
-        # 触发断开连接处理逻辑
+        # Trigger disconnect handling logic
         await self.disconnect_client(websocket, client_id)
     
     async def handle_player_move(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerMoveMessage):
-        """处理玩家移动 - 修复：信任客户端位置"""
+        """Handle player movement - fix: trust client position"""
         if client_id in self.players:
             player = self.players[client_id]
             player.moving_directions = message.direction
             player.last_client_update = time.time()
-            player.use_client_position = True  # 标记使用客户端位置
+            player.use_client_position = True  # Mark to use client position
             
-            # 直接使用客户端发送的位置（信任客户端预测）
+            # Directly use client-sent position (trust client prediction)
             if message.position:
-                # 基本的反作弊检查
+                # Basic anti-cheat check
                 new_x = max(0, min(SCREEN_WIDTH, message.position["x"]))
                 new_y = max(0, min(SCREEN_HEIGHT, message.position["y"]))
                 
-                # 更新位置
+                # Update position
                 player.position = {"x": new_x, "y": new_y}
             
             player.last_update = time.time()
             
-            # 找到玩家所在的房间
+            # Find player's room
             player_room = None
             for room in self.rooms.values():
                 if client_id in room.players:
@@ -491,26 +492,26 @@ class TankGameServer:
                     break
             
             if player_room:
-                # 立即广播移动消息（事件驱动）
+                # Immediately broadcast movement message (event-driven)
                 await self.broadcast_to_room(player_room.room_id, message, exclude=client_id)
             else:
                 print(f"⚠️ Player {client_id} not found in any room for movement")
     
     async def handle_player_stop(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerStopMessage):
-        """处理玩家停止"""
+        """Handle player stop"""
         if client_id in self.players:
             player = self.players[client_id]
             player.moving_directions = {"w": False, "a": False, "s": False, "d": False}
             player.last_client_update = time.time()
             player.use_client_position = True
             
-            # 使用客户端发送的停止位置
+            # Use client-sent stop position
             if message.position:
                 new_x = max(0, min(SCREEN_WIDTH, message.position["x"]))
                 new_y = max(0, min(SCREEN_HEIGHT, message.position["y"]))
                 player.position = {"x": new_x, "y": new_y}
             
-            # 找到玩家所在的房间
+            # Find player's room
             player_room = None
             for room in self.rooms.values():
                 if client_id in room.players:
@@ -518,17 +519,17 @@ class TankGameServer:
                     break
             
             if player_room:
-                # 立即广播停止消息（事件驱动）
+                # Immediately broadcast stop message (event-driven)
                 await self.broadcast_to_room(player_room.room_id, message, exclude=client_id)
             else:
                 print(f"⚠️ Player {client_id} not found in any room for stop")
     
     async def handle_player_shoot(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerShootMessage):
-        """处理玩家射击"""
+        """Handle player shooting"""
         if client_id in self.players:
             player = self.players[client_id]
             
-            # 找到玩家所在的房间
+            # Find player's room
             player_room = None
             for room in self.rooms.values():
                 if client_id in room.players:
@@ -539,7 +540,7 @@ class TankGameServer:
                 print(f"⚠️ Player {client_id} not found in any room")
                 return
             
-            # 创建子弹 - 使用共享实体类的新接口
+            # Create bullet - using new interface of shared entity class
             bullet_data = {
                 'bullet_id': message.bullet_id,
                 'owner_id': client_id,
@@ -550,7 +551,7 @@ class TankGameServer:
             bullet = Bullet(bullet_data)
             player_room.add_bullet(bullet)
             
-            # 立即广播子弹发射消息（事件驱动）
+            # Immediately broadcast bullet fired message (event-driven)
             bullet_message = BulletFiredMessage(
                 bullet_id=bullet.bullet_id,
                 owner_id=bullet.owner_id,
@@ -564,7 +565,7 @@ class TankGameServer:
             print(f"⚠️ Player {client_id} not found for shooting")
     
     async def handle_ping(self, websocket: WebSocketServerProtocol, client_id: str, message: PingMessage):
-        """处理 Ping"""
+        """Handle Ping"""
         pong_message = PongMessage(
             client_id=client_id,
             sequence=message.sequence,
@@ -573,11 +574,11 @@ class TankGameServer:
         await self.send_message(websocket, pong_message)
     
     async def handle_create_room_request(self, websocket: WebSocketServerProtocol, client_id: str, message: CreateRoomRequestMessage):
-        """处理创建房间请求"""
-        # 生成唯一房间ID
+        """Handle create room request"""
+        # Generate unique room ID
         room_id = f"room_{int(time.time())}_{str(uuid.uuid4())[:8]}"
         
-        # 创建新房间
+        # Create new room
         new_room = GameRoom(
             room_id=room_id,
             name=message.room_name,
@@ -585,12 +586,12 @@ class TankGameServer:
             max_players=message.max_players
         )
         
-        # 添加到房间字典
+        # Add to room dictionary
         self.rooms[room_id] = new_room
         
         print(f"🏠 Created room {room_id} '{message.room_name}' for host {client_id}")
         
-        # 发送房间创建成功消息
+        # Send room creation success message
         room_created_message = RoomCreatedMessage(
             room_id=room_id,
             room_name=message.room_name,
@@ -602,14 +603,14 @@ class TankGameServer:
         
         print(f"📤 Sent room creation confirmation to {client_id}")
         
-        # 注意：不在这里移动玩家，等待客户端发送 PlayerJoinMessage
+        # Note: Don't move player here, wait for client to send PlayerJoinMessage
     
     async def handle_room_list_request(self, websocket: WebSocketServerProtocol, client_id: str, message: RoomListRequestMessage):
-        """处理房间列表请求"""
-        # 只返回有玩家的房间，且排除默认房间如果为空
+        """Handle room list request"""
+        # Only return rooms with players, exclude empty default room
         room_list = []
         for room_id, room in self.rooms.items():
-            if len(room.players) > 0:  # 只显示有玩家的房间
+            if len(room.players) > 0:  # Only show rooms with players
                 room_info = {
                     'room_id': room_id,
                     'name': room.name,
@@ -620,7 +621,7 @@ class TankGameServer:
                 }
                 room_list.append(room_info)
         
-        # 使用RoomListMessage发送响应
+        # Send response using RoomListMessage
         room_list_message = RoomListMessage(
             rooms=room_list,
             total_players=len(self.players)
@@ -629,7 +630,7 @@ class TankGameServer:
         print(f"📋 Sent room list to {client_id}: {len(room_list)} rooms")
     
     async def handle_room_disbanded(self, websocket: WebSocketServerProtocol, client_id: str, message):
-        """处理房间解散请求"""
+        """Handle room disband request"""
 
         if not isinstance(message, RoomDisbandedMessage):
             return
@@ -642,7 +643,7 @@ class TankGameServer:
         
         room = self.rooms[room_id]
         
-        # 验证是否为房主
+        # Verify if host
         if not room.is_host(client_id):
             error_msg = create_error_message("NOT_HOST", "Only the host can disband the room")
             await self.send_message(websocket, error_msg)
@@ -650,31 +651,31 @@ class TankGameServer:
         
         print(f"🗑️ Host {client_id} is disbanding room {room_id}")
         
-        # 广播房间解散消息给所有房间内的玩家（除房主外）
+        # Broadcast room disband message to all players in room (except host)
         await self.broadcast_to_room(room_id, message, exclude=client_id)
         
-        # 移除房间内所有玩家
+        # Remove all players from room
         players_to_remove = list(room.players.keys())
         for player_id in players_to_remove:
             if player_id in self.players:
                 del self.players[player_id]
                 print(f"📤 Removed player {player_id} due to room disbandment")
         
-        # 删除房间
+        # Delete room
         del self.rooms[room_id]
         print(f"🗑️ Room {room_id} disbanded and deleted")
         
-        # 更新连接状态
+        # Update connection status
         print(f"📊 After room disbandment - Remaining rooms: {len(self.rooms)}, Total players: {len(self.players)}")
     
     async def handle_slot_change_request(self, websocket: WebSocketServerProtocol, client_id: str, message: SlotChangeRequestMessage):
-        """处理槽位切换请求"""
+        """Handle slot change request"""
         if client_id not in self.players:
             error_msg = create_error_message("PLAYER_NOT_FOUND", "Player not found")
             await self.send_message(websocket, error_msg)
             return
         
-        # 确保房间存在
+        # Ensure room exists
         if message.room_id not in self.rooms:
             error_msg = create_error_message("ROOM_NOT_FOUND", f"Room {message.room_id} not found")
             await self.send_message(websocket, error_msg)
@@ -683,10 +684,10 @@ class TankGameServer:
         room = self.rooms[message.room_id]
         player = self.players[client_id]
         
-        # 尝试切换槽位
+        # Try to change slot
         old_slot = player.slot_index
         if room.change_player_slot(client_id, message.target_slot):
-            # 槽位切换成功
+            # Slot change successful
             slot_changed_message = SlotChangedMessage(
                 player_id=client_id,
                 old_slot=old_slot,
@@ -694,13 +695,13 @@ class TankGameServer:
                 room_id=message.room_id
             )
             
-            # 广播槽位变更消息
+            # Broadcast slot change message
             await self.broadcast_to_room(message.room_id, slot_changed_message)
             
-            # 发送更新的房间状态
+            # Send updated room state
             room_update_message = GameStateUpdateMessage(
                 players=[p.to_dict() for p in room.players.values()],
-                bullets=[],  # 房间大厅不需要子弹信息
+                bullets=[],  # Room lobby doesn't need bullet info
                 game_time=room.game_time,
                 frame_id=room.frame_id
             )
@@ -708,12 +709,12 @@ class TankGameServer:
             
             print(f"✅ Player {client_id} moved from slot {old_slot} to slot {message.target_slot}")
         else:
-            # 槽位切换失败
+            # Slot change failed
             error_msg = create_error_message("SLOT_UNAVAILABLE", f"Slot {message.target_slot} is not available")
             await self.send_message(websocket, error_msg)
     
     async def handle_room_start_game(self, websocket: WebSocketServerProtocol, client_id: str, message: RoomStartGameMessage):
-        """处理房间开始游戏消息"""
+        """Handle room start game message"""
         room_id = message.room_id
         if room_id not in self.rooms:
             error_msg = create_error_message("ROOM_NOT_FOUND", f"Room {room_id} not found")
@@ -722,31 +723,38 @@ class TankGameServer:
         
         room = self.rooms[room_id]
         
-        # 检查是否为房主
+        # Check if host
         if not room.is_host(client_id):
             error_msg = create_error_message("NOT_HOST", "Only the host can start the game")
             await self.send_message(websocket, error_msg)
             return
         
-        # 启动游戏
+        # Start game
         if room.start_game():
             print(f"🚀 Game started in room {room_id} by host {client_id}")
             
-            # 广播游戏开始消息给房间内所有玩家
+            # Broadcast game start message to all players in room
             await self.broadcast_to_room(room_id, message)
         else:
             error_msg = create_error_message("CANNOT_START", "Cannot start game in current room state")
             await self.send_message(websocket, error_msg)
     
     async def send_message(self, websocket: WebSocketServerProtocol, message: GameMessage):
-        """发送消息给客户端"""
+        """Send message to client"""
         try:
             await websocket.send(message.to_json())
         except Exception as e:
             print(f"❌ Error sending message: {e}")
     
+    async def send_message_to_player(self, player_id: str, message: GameMessage):
+        """Send message to specific player"""
+        if player_id in self.players:
+            player = self.players[player_id]
+            if player.websocket:
+                await self.send_message(player.websocket, message)
+    
     async def broadcast_to_room(self, room_id: str, message: GameMessage, exclude: Optional[str] = None):
-        """广播消息给房间内的所有玩家"""
+        """Broadcast message to all players in room"""
         if room_id not in self.rooms:
             return
         
@@ -763,18 +771,29 @@ class TankGameServer:
             await asyncio.gather(*tasks, return_exceptions=True)
     
     async def broadcast_events(self, room_id: str, events: List[GameMessage]):
-        """广播事件列表"""
+        """Broadcast event list"""
         if not events:
             return
             
         for event in events:
-            await self.broadcast_to_room(room_id, event)
-            # 减少事件广播日志
-            if event.type != GameMessageType.BULLET_DESTROYED:
-                print(f"📡 Event {event.type} broadcasted to room {room_id}")
+            # Handle victory/defeat messages - send to specific players
+            if event.type == GameMessageType.GAME_VICTORY:
+                # Send victory message only to the winner
+                await self.send_message_to_player(event.winner_player_id, event)
+                print(f"🏆 Victory message sent to {event.winner_player_name}")
+            elif event.type == GameMessageType.GAME_DEFEAT:
+                # Send defeat message only to the eliminated player
+                await self.send_message_to_player(event.eliminated_player_id, event)
+                print(f"💔 Defeat message sent to {event.eliminated_player_name}")
+            else:
+                # Broadcast other events to all players in room
+                await self.broadcast_to_room(room_id, event)
+                # Reduce event broadcast logs
+                if event.type != GameMessageType.BULLET_DESTROYED:
+                    print(f"📡 Event {event.type} broadcasted to room {room_id}")
     
     async def game_loop(self):
-        """游戏主循环 - 事件驱动架构"""
+        """Main game loop - event-driven architecture"""
         target_fps = 60
         dt = 1.0 / target_fps
         
@@ -783,31 +802,31 @@ class TankGameServer:
         while self.running:
             loop_start = time.time()
             
-            # 更新所有房间的游戏状态
+            # Update game state for all rooms
             for room in self.rooms.values():
-                if room.players:  # 只更新有玩家的房间
-                    # 物理更新，获取事件
+                if room.players:  # Only update rooms with players
+                    # Physics update, get events
                     events = room.update_physics(dt)
                     
-                    # 广播事件（碰撞、死亡、子弹销毁等）
+                    # Broadcast events (collisions, deaths, bullet destruction, etc.)
                     if events:
                         await self.broadcast_events(room.room_id, events)
                     
-                    # 大幅减少状态同步频率 - 每2秒一次兜底同步
-                    if room.frame_id % 120 == 0:  # 每2秒检查一次
+                    # Greatly reduce state sync frequency - fallback sync every 2 seconds
+                    if room.frame_id % 120 == 0:  # Check every 2 seconds
                         state_update = room.get_state_if_changed()
                         if state_update:
                             await self.broadcast_to_room(room.room_id, state_update)
                             print(f"🔄 Fallback state sync for room {room.room_id} (frame {room.frame_id})")
             
-            # 控制帧率
+            # Control frame rate
             loop_time = time.time() - loop_start
             sleep_time = max(0, dt - loop_time)
             await asyncio.sleep(sleep_time)
 
 
 async def main():
-    """主函数"""
+    """Main function"""
     server = TankGameServer()
     try:
         display_server_info(SERVER_HOST, SERVER_PORT)
