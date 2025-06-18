@@ -270,6 +270,8 @@ class GameClient:
             await self.handle_player_leave(message)
         elif message.type == GameMessageType.ROOM_CREATED:
             await self.handle_room_created(message)
+        elif message.type == GameMessageType.ROOM_START_GAME:
+            await self.handle_room_start_game(message)
         elif message.type == GameMessageType.ROOM_LIST:
             await self.handle_room_list(message)
         elif message.type == GameMessageType.ROOM_DISBANDED:
@@ -428,6 +430,25 @@ class GameClient:
         )
         await self.send_message(join_message)
         print(f"📤 Sent join message for room {message.room_id}")
+    
+    async def handle_room_start_game(self, message):
+        """处理房间开始游戏"""
+        from tank_game_messages import RoomStartGameMessage
+        if isinstance(message, RoomStartGameMessage):
+            print(f"🚀 Game starting in room {message.room_id} by host {message.host_player_id}")
+            
+            # 清理之前的游戏状态
+            self.bullets.clear()
+            
+            # 切换到游戏状态
+            current_state = self.state_manager.get_current_state_type()
+            if current_state == GameStateType.ROOM_LOBBY:
+                print("🎮 Switching to IN_GAME state")
+                self.state_manager.change_state(GameStateType.IN_GAME)
+            else:
+                print(f"⚠️ Received game start while in unexpected state: {current_state}")
+        else:
+            print(f"⚠️ Unexpected room start game message type: {type(message)}")
     
     async def handle_room_list(self, message):
         """处理房间列表响应"""
