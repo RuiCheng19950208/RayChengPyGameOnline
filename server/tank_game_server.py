@@ -601,7 +601,7 @@ class TankGameServer:
                 'owner_id': client_id,
                 'position': shoot_position,  # 使用射击位置，不是玩家当前位置
                 'velocity': {"x": message.direction["x"] * BULLET_SPEED, "y": message.direction["y"] * BULLET_SPEED},
-                'damage': 25
+                'damage': BULLET_DAMAGE
             }
             bullet = Bullet(bullet_data)
             player_room.add_bullet(bullet)
