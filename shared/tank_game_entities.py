@@ -66,23 +66,22 @@ class Player:
         dy = position["y"] - self.position["y"]
         distance = (dx * dx + dy * dy) ** 0.5
         
-        # Greatly increase correction threshold, only correct on extreme differences
-        correction_threshold = 200.0
+        # Very conservative correction thresholds to minimize jitter
+        correction_threshold = 100.0  # Reduced from 200.0
         
-        # If moving, further increase threshold
+        # If moving, be even more conservative
         is_moving = any(self.moving_directions.values())
         if is_moving:
-            correction_threshold = 300.0
+            correction_threshold = 150.0  # Reduced from 300.0
         
-        # Only correct on extreme differences
+        # Only correct on significant differences
         if distance > correction_threshold:
-            print(f"🔧 Major server correction for {self.name}: {distance:.1f}px")
-            # Smooth correction instead of direct jump
-            blend_factor = 0.3  # 30% server position, 70% client position
+            print(f"🔧 Server correction for {self.name}: {distance:.1f}px")
+            # Very gentle correction to avoid jitter
+            blend_factor = 0.1  # Reduced from 0.3 - only 10% server position
             self.position["x"] = self.position["x"] + (dx * blend_factor)
             self.position["y"] = self.position["y"] + (dy * blend_factor)
-        elif distance > 50.0:  # Medium difference, log but don't correct
-            print(f"📊 Position drift: {distance:.1f}px (within tolerance)")
+        # Remove the medium difference logging to reduce noise
         
         self.last_server_sync = time.time()
     

@@ -320,15 +320,23 @@ class GameClient:
         for player_data in message.players:
             player_id = player_data['player_id']
             if player_id in self.players:
-                # Update existing player
-                self.players[player_id].update_from_server(
-                    player_data['position'],
-                    player_data.get('moving_directions')
-                )
-                # Update other attributes
-                self.players[player_id].health = player_data.get('health', 100)
-                self.players[player_id].is_alive = player_data.get('is_alive', True)
-                self.players[player_id].slot_index = player_data.get('slot_index', 0)
+                # Skip position updates for local player to avoid conflicts with client prediction
+                if player_id == self.player_id:
+                    # Only update non-position attributes for local player
+                    self.players[player_id].health = player_data.get('health', 100)
+                    self.players[player_id].is_alive = player_data.get('is_alive', True)
+                    self.players[player_id].slot_index = player_data.get('slot_index', 0)
+                    # Don't update position or movement directions for local player
+                else:
+                    # Update everything for remote players
+                    self.players[player_id].update_from_server(
+                        player_data['position'],
+                        player_data.get('moving_directions')
+                    )
+                    # Update other attributes
+                    self.players[player_id].health = player_data.get('health', 100)
+                    self.players[player_id].is_alive = player_data.get('is_alive', True)
+                    self.players[player_id].slot_index = player_data.get('slot_index', 0)
             else:
                 # New player
                 new_player = Player(player_data)
@@ -367,9 +375,13 @@ class GameClient:
     async def handle_player_move(self, message: PlayerMoveMessage):
         """Handle other player movement"""
         if message.player_id != self.player_id and message.player_id in self.players:
-            self.players[message.player_id].update_from_server(
-                message.position, message.direction
-            )
+            # Only update if the movement directions actually changed
+            current_directions = self.players[message.player_id].moving_directions
+            if current_directions != message.direction:
+                self.players[message.player_id].update_from_server(
+                    message.position, message.direction
+                )
+            # If directions haven't changed, don't update position to avoid jitter
     
     async def handle_player_stop(self, message: PlayerStopMessage):
         """Handle other player stop"""
@@ -635,13 +647,14 @@ class GameClient:
         else:
             position_changed = True  # First send
         
-        # Periodic send (prevent packet loss)
+        # Periodic send (prevent packet loss) - increased interval
         time_since_last_send = current_time - self.last_movement_send
-        periodic_send = time_since_last_send > (self.movement_send_interval * 3)  # Force send every 3 cycles
+        periodic_send = time_since_last_send > (self.movement_send_interval * 5)  # Force send every 5 cycles instead of 3
         
-        # Decide whether to send
-        should_send = (input_changed or position_changed or periodic_send or
-                      time_since_last_send > self.movement_send_interval)
+        # More conservative sending - only send on input changes or significant position changes
+        should_send = (input_changed or 
+                      (position_changed and time_since_last_send > self.movement_send_interval) or
+                      periodic_send)
         
         if should_send:
             directions = {
@@ -666,11 +679,9 @@ class GameClient:
             self.last_input_state = self.input_state.copy()
             self.last_sent_position = current_position.copy()
             
-            # Debug info
+            # Reduced debug info
             if input_changed:
                 print(f"📤 Input changed: {directions}")
-            elif position_changed:
-                print(f"📤 Position changed: {dx:.1f}, {dy:.1f}")
             elif periodic_send:
                 print(f"📤 Periodic send (anti-packet-loss)")
     
@@ -712,7 +723,9 @@ class GameClient:
         # Only update remote players' positions, local player already updated in update_local_player
         for player_id, player in self.players.items():
             if player_id != self.player_id:  # Only update other players
-                player.update_position(dt)
+                # Only update if player is moving to avoid unnecessary position changes
+                if any(player.moving_directions.values()):
+                    player.update_position(dt)
         
         # Update bullet positions
         bullets_to_remove = []

@@ -469,6 +469,10 @@ class TankGameServer:
         """Handle player movement - fix: trust client position"""
         if client_id in self.players:
             player = self.players[client_id]
+            
+            # Check if movement actually changed to avoid redundant broadcasts
+            directions_changed = player.moving_directions != message.direction
+            
             player.moving_directions = message.direction
             player.last_client_update = time.time()
             player.use_client_position = True  # Mark to use client position
@@ -492,8 +496,9 @@ class TankGameServer:
                     break
             
             if player_room:
-                # Immediately broadcast movement message (event-driven)
-                await self.broadcast_to_room(player_room.room_id, message, exclude=client_id)
+                # Only broadcast if directions actually changed (reduce redundant messages)
+                if directions_changed:
+                    await self.broadcast_to_room(player_room.room_id, message, exclude=client_id)
             else:
                 print(f"⚠️ Player {client_id} not found in any room for movement")
     
@@ -812,8 +817,9 @@ class TankGameServer:
                     if events:
                         await self.broadcast_events(room.room_id, events)
                     
-                    # Greatly reduce state sync frequency - fallback sync every 2 seconds
-                    if room.frame_id % 120 == 0:  # Check every 2 seconds
+                    # Greatly reduce state sync frequency - fallback sync every 5 seconds
+                    # Only send if there are actual state changes or for critical sync
+                    if room.frame_id % 300 == 0:  # Check every 5 seconds
                         state_update = room.get_state_if_changed()
                         if state_update:
                             await self.broadcast_to_room(room.room_id, state_update)
