@@ -87,12 +87,12 @@ class Player:
         else:
             # 远程玩家 - 使用温和的校正，保持平滑移动
             # 大幅提高校正阈值，只有在极大差异时才校正
-            correction_threshold = 120.0  # 适中的阈值，不会太宽松也不会太严格
+            correction_threshold = 10.0  # 适中的阈值，不会太宽松也不会太严格
             
             # 如果正在移动，进一步提高阈值
             is_moving = any(self.moving_directions.values())
             if is_moving:
-                correction_threshold = 180.0  # 移动时更宽容
+                correction_threshold = 30.0  # 移动时更宽容
             
             # 只有在差异较大时才进行校正
             if distance > correction_threshold:
@@ -101,7 +101,7 @@ class Player:
                 blend_factor = 0.25  # 25% 服务器位置，75% 客户端位置
                 self.position["x"] = self.position["x"] + (dx * blend_factor)
                 self.position["y"] = self.position["y"] + (dy * blend_factor)
-            elif distance > 30.0:  # 中等差异，记录但不校正
+            elif distance > 5.0:  # 中等差异，记录但不校正
                 # 减少日志噪音 - 只在调试时输出
                 pass  # print(f"📊 Remote player drift: {distance:.1f}px (within tolerance)")
         
