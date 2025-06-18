@@ -106,7 +106,7 @@ class Player:
         ]
     
     def update_deterministic_position(self, dt: float):
-        """确定性位置更新 - 基于按键状态历史，修复速度问题"""
+        """确定性位置更新 - 基于按键状态历史"""
         current_time = time.time()
         
         # 使用增量移动而不是累积计算
