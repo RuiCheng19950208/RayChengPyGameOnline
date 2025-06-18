@@ -55,12 +55,6 @@ class Player:
         if not websocket:
             self.last_server_sync = time.time()
             self.server_sync_threshold = 100.0
-            
-            # Remote player smooth interpolation attributes
-            self.target_position = self.position.copy()  # Target position from server
-            self.render_position = self.position.copy()  # Smoothed position for rendering
-            self.interpolation_speed = 8.0  # How fast to interpolate (higher = faster)
-            self.last_interpolation_time = time.time()
     
     def update_from_server(self, position: Dict[str, float], directions: Dict[str, bool] = None):
         """Update state from server - used by client"""
@@ -92,10 +86,28 @@ class Player:
                 self.position["x"] = self.position["x"] + (dx * blend_factor)
                 self.position["y"] = self.position["y"] + (dy * blend_factor)
         else:
-            # 客户端远程玩家：使用平滑插值而不是直接设置位置
-            self.target_position["x"] = position["x"]
-            self.target_position["y"] = position["y"]
+            # 客户端远程玩家：使用温和的位置修正，保持平滑移动
+            # Calculate position difference
+            dx = position["x"] - self.position["x"]
+            dy = position["y"] - self.position["y"]
+            distance = (dx * dx + dy * dy) ** 0.5
             
+            # Use gentle correction thresholds for remote players
+            correction_threshold = 50.0  # More sensitive than server correction
+            
+            # If moving, be more tolerant of position differences
+            is_moving = any(self.moving_directions.values())
+            if is_moving:
+                correction_threshold = 80.0  # Allow more deviation when moving
+            
+            # Only correct on significant differences
+            if distance > correction_threshold:
+                # Gentle correction to maintain smoothness
+                blend_factor = 0.3  # 30% server position, 70% current position
+                self.position["x"] = self.position["x"] + (dx * blend_factor)
+                self.position["y"] = self.position["y"] + (dy * blend_factor)
+            # For small differences, let client prediction handle the movement
+        
         self.last_server_sync = time.time()
     
     def update_position(self, dt: float):
@@ -122,30 +134,6 @@ class Player:
         self.position["y"] = max(0, min(SCREEN_HEIGHT, self.position["y"]))
         
         self.last_update = time.time()
-    
-    def update_remote_interpolation(self, dt: float):
-        """Update remote player interpolation - smooth movement for remote players"""
-        if not hasattr(self, 'target_position'):
-            return  # This is a server-side player or local player
-        
-        # Calculate distance to target
-        dx = self.target_position["x"] - self.render_position["x"]
-        dy = self.target_position["y"] - self.render_position["y"]
-        distance = (dx * dx + dy * dy) ** 0.5
-        
-        # If very close to target, snap to target
-        if distance < 1.0:
-            self.render_position["x"] = self.target_position["x"]
-            self.render_position["y"] = self.target_position["y"]
-        else:
-            # Smooth interpolation towards target
-            interpolation_factor = min(1.0, self.interpolation_speed * dt)
-            self.render_position["x"] += dx * interpolation_factor
-            self.render_position["y"] += dy * interpolation_factor
-        
-        # Update actual position to render position for consistency
-        self.position["x"] = self.render_position["x"]
-        self.position["y"] = self.render_position["y"]
     
     def to_dict(self) -> Dict:
         """Convert to dictionary - for network transmission"""

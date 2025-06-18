@@ -375,21 +375,31 @@ class GameClient:
     async def handle_player_move(self, message: PlayerMoveMessage):
         """Handle other player movement"""
         if message.player_id != self.player_id and message.player_id in self.players:
-            # Only update if the movement directions actually changed
-            current_directions = self.players[message.player_id].moving_directions
-            if current_directions != message.direction:
-                self.players[message.player_id].update_from_server(
-                    message.position, message.direction
-                )
-            # If directions haven't changed, don't update position to avoid jitter
+            # Always update movement directions for immediate response
+            self.players[message.player_id].moving_directions = message.direction
+            
+            # Use server position as a reference for correction, but allow smooth movement
+            if message.position:
+                self.players[message.player_id].update_from_server(message.position, message.direction)
+            
+            # 为了调试，记录远程玩家的移动
+            if any(message.direction.values()):
+                moving_keys = [k for k, v in message.direction.items() if v]
+                print(f"🎮 Remote player {message.player_id} moving: {moving_keys}")
     
     async def handle_player_stop(self, message: PlayerStopMessage):
         """Handle other player stop"""
         if message.player_id != self.player_id and message.player_id in self.players:
-            self.players[message.player_id].update_from_server(message.position)
+            # Use server position for final stop position
+            if message.position:
+                self.players[message.player_id].update_from_server(message.position)
+            
+            # Immediately stop movement
             self.players[message.player_id].moving_directions = {
                 "w": False, "a": False, "s": False, "d": False
             }
+            
+            print(f"🛑 Remote player {message.player_id} stopped")
     
     async def handle_bullet_fired(self, message: BulletFiredMessage):
         """Handle bullet fired"""
@@ -719,16 +729,18 @@ class GameClient:
         self.input_state['mouse_clicked'] = False
     
     def update_game_objects(self, dt: float):
-        """Update game objects - 修复：停止客户端预测远程玩家位置，完全依赖服务器状态"""
-        # Completely stop the client prediction of remote players, only rely on the server to send positions
-        # This ensures that all clients see the remote player positions exactly the same
+        """Update game objects - 为远程玩家使用与本地玩家相同的移动算法"""
+        # Use the same movement algorithm for remote players as local players
+        # This ensures smooth movement while maintaining consistency
         
-        # Update remote players with smooth interpolation
+        # Update remote players using the same movement algorithm as local player
         for player_id, player in self.players.items():
             if player_id != self.player_id:  # Only update remote players
-                player.update_remote_interpolation(dt)
+                # Use the same position update algorithm as local player
+                # This provides smooth movement based on direction states from server
+                player.update_position(dt)
         
-        # Only update bullet positions (bullets can be client predicted, because they are not controlled by players)
+        # Update bullet positions
         bullets_to_remove = []
         for bullet_id, bullet in self.bullets.items():
             if not bullet.update(dt):
