@@ -57,56 +57,53 @@ class Player:
             self.server_sync_threshold = 100.0
     
     def update_from_server(self, position: Dict[str, float], directions: Dict[str, bool] = None):
-        """Update state from server - used by client"""
+        """从服务器更新状态 - 客户端使用"""
         if directions:
             self.moving_directions = directions.copy()
         
-        # 对于远程玩家，直接使用服务器位置，不进行客户端预测修正
-        # 这样确保所有客户端看到的远程玩家位置完全一致
+        # 计算位置差异
+        dx = position["x"] - self.position["x"]
+        dy = position["y"] - self.position["y"]
+        distance = (dx * dx + dy * dy) ** 0.5
+        
+        # 区分不同类型的玩家处理逻辑
         if hasattr(self, 'websocket') and self.websocket:
-            # 服务器端Player，保持原有逻辑
-            # Calculate position difference
-            dx = position["x"] - self.position["x"]
-            dy = position["y"] - self.position["y"]
-            distance = (dx * dx + dy * dy) ** 0.5
+            # 服务器端玩家 - 保持原有的服务器逻辑
+            correction_threshold = 100.0
+            if any(self.moving_directions.values()):
+                correction_threshold = 150.0
             
-            # Very conservative correction thresholds to minimize jitter
-            correction_threshold = 100.0  # Reduced from 200.0
-            
-            # If moving, be even more conservative
-            is_moving = any(self.moving_directions.values())
-            if is_moving:
-                correction_threshold = 150.0  # Reduced from 300.0
-            
-            # Only correct on significant differences
             if distance > correction_threshold:
                 print(f"🔧 Server correction for {self.name}: {distance:.1f}px")
-                # Very gentle correction to avoid jitter
-                blend_factor = 0.1  # Reduced from 0.3 - only 10% server position
+                blend_factor = 0.1
                 self.position["x"] = self.position["x"] + (dx * blend_factor)
                 self.position["y"] = self.position["y"] + (dy * blend_factor)
+                
+        elif hasattr(self, 'is_local_player') and self.is_local_player:
+            # 本地玩家 - 不进行位置校正，完全信任客户端预测
+            # 这个分支通常不会被调用，因为本地玩家不会收到自己的位置更新
+            pass
+            
         else:
-            # 客户端远程玩家：使用温和的位置修正，保持平滑移动
-            # Calculate position difference
-            dx = position["x"] - self.position["x"]
-            dy = position["y"] - self.position["y"]
-            distance = (dx * dx + dy * dy) ** 0.5
+            # 远程玩家 - 使用温和的校正，保持平滑移动
+            # 大幅提高校正阈值，只有在极大差异时才校正
+            correction_threshold = 120.0  # 适中的阈值，不会太宽松也不会太严格
             
-            # Use gentle correction thresholds for remote players
-            correction_threshold = 50.0  # More sensitive than server correction
-            
-            # If moving, be more tolerant of position differences
+            # 如果正在移动，进一步提高阈值
             is_moving = any(self.moving_directions.values())
             if is_moving:
-                correction_threshold = 80.0  # Allow more deviation when moving
+                correction_threshold = 180.0  # 移动时更宽容
             
-            # Only correct on significant differences
+            # 只有在差异较大时才进行校正
             if distance > correction_threshold:
-                # Gentle correction to maintain smoothness
-                blend_factor = 0.3  # 30% server position, 70% current position
+                print(f"🔧 Major server correction for remote {self.name}: {distance:.1f}px")
+                # 平滑校正而不是直接跳跃
+                blend_factor = 0.25  # 25% 服务器位置，75% 客户端位置
                 self.position["x"] = self.position["x"] + (dx * blend_factor)
                 self.position["y"] = self.position["y"] + (dy * blend_factor)
-            # For small differences, let client prediction handle the movement
+            elif distance > 30.0:  # 中等差异，记录但不校正
+                # 减少日志噪音 - 只在调试时输出
+                pass  # print(f"📊 Remote player drift: {distance:.1f}px (within tolerance)")
         
         self.last_server_sync = time.time()
     

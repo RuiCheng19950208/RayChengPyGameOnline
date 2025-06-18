@@ -320,26 +320,32 @@ class GameClient:
         for player_data in message.players:
             player_id = player_data['player_id']
             if player_id in self.players:
-                # Skip position updates for local player to avoid conflicts with client prediction
+                # 区分本地玩家和远程玩家的更新逻辑
                 if player_id == self.player_id:
-                    # Only update non-position attributes for local player
+                    # 本地玩家：只更新非位置属性，避免与客户端预测冲突
                     self.players[player_id].health = player_data.get('health', 100)
                     self.players[player_id].is_alive = player_data.get('is_alive', True)
                     self.players[player_id].slot_index = player_data.get('slot_index', 0)
-                    # Don't update position or movement directions for local player
+                    # 不更新本地玩家的位置或移动方向
                 else:
-                    # Update everything for remote players
+                    # 远程玩家：更新所有属性，包括位置校正
                     self.players[player_id].update_from_server(
                         player_data['position'],
                         player_data.get('moving_directions')
                     )
-                    # Update other attributes
+                    # 更新其他属性
                     self.players[player_id].health = player_data.get('health', 100)
                     self.players[player_id].is_alive = player_data.get('is_alive', True)
                     self.players[player_id].slot_index = player_data.get('slot_index', 0)
             else:
-                # New player
+                # 新玩家
                 new_player = Player(player_data)
+                # 为新玩家设置客户端引用，用于区分本地/远程玩家
+                if player_id == self.player_id:
+                    new_player.is_local_player = True
+                else:
+                    new_player.is_local_player = False
+                
                 self.players[player_id] = new_player
                 
                 if player_id == self.player_id:
