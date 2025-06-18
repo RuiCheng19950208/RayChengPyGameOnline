@@ -817,13 +817,15 @@ class TankGameServer:
                     if events:
                         await self.broadcast_events(room.room_id, events)
                     
-                    # Greatly reduce state sync frequency - fallback sync every 5 seconds
-                    # Only send if there are actual state changes or for critical sync
-                    if room.frame_id % 300 == 0:  # Check every 5 seconds
+                    # 提高位置同步频率 - 每秒同步3次而不是每5秒1次
+                    # 这样确保远程玩家位置在所有客户端上保持一致
+                    if room.frame_id % 20 == 0:  # 每20帧同步一次 (每秒3次)
                         state_update = room.get_state_if_changed()
                         if state_update:
                             await self.broadcast_to_room(room.room_id, state_update)
-                            print(f"🔄 Fallback state sync for room {room.room_id} (frame {room.frame_id})")
+                            # 减少日志输出，只在重要同步时输出
+                            if room.frame_id % 60 == 0:  # 每秒输出一次日志
+                                print(f"🔄 Position sync for room {room.room_id} (frame {room.frame_id})")
             
             # Control frame rate
             loop_time = time.time() - loop_start

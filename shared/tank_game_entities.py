@@ -61,28 +61,35 @@ class Player:
         if directions:
             self.moving_directions = directions.copy()
         
-        # Calculate position difference
-        dx = position["x"] - self.position["x"]
-        dy = position["y"] - self.position["y"]
-        distance = (dx * dx + dy * dy) ** 0.5
-        
-        # Very conservative correction thresholds to minimize jitter
-        correction_threshold = 100.0  # Reduced from 200.0
-        
-        # If moving, be even more conservative
-        is_moving = any(self.moving_directions.values())
-        if is_moving:
-            correction_threshold = 150.0  # Reduced from 300.0
-        
-        # Only correct on significant differences
-        if distance > correction_threshold:
-            print(f"🔧 Server correction for {self.name}: {distance:.1f}px")
-            # Very gentle correction to avoid jitter
-            blend_factor = 0.1  # Reduced from 0.3 - only 10% server position
-            self.position["x"] = self.position["x"] + (dx * blend_factor)
-            self.position["y"] = self.position["y"] + (dy * blend_factor)
-        # Remove the medium difference logging to reduce noise
-        
+        # 对于远程玩家，直接使用服务器位置，不进行客户端预测修正
+        # 这样确保所有客户端看到的远程玩家位置完全一致
+        if hasattr(self, 'websocket') and self.websocket:
+            # 服务器端Player，保持原有逻辑
+            # Calculate position difference
+            dx = position["x"] - self.position["x"]
+            dy = position["y"] - self.position["y"]
+            distance = (dx * dx + dy * dy) ** 0.5
+            
+            # Very conservative correction thresholds to minimize jitter
+            correction_threshold = 100.0  # Reduced from 200.0
+            
+            # If moving, be even more conservative
+            is_moving = any(self.moving_directions.values())
+            if is_moving:
+                correction_threshold = 150.0  # Reduced from 300.0
+            
+            # Only correct on significant differences
+            if distance > correction_threshold:
+                print(f"🔧 Server correction for {self.name}: {distance:.1f}px")
+                # Very gentle correction to avoid jitter
+                blend_factor = 0.1  # Reduced from 0.3 - only 10% server position
+                self.position["x"] = self.position["x"] + (dx * blend_factor)
+                self.position["y"] = self.position["y"] + (dy * blend_factor)
+        else:
+            # 客户端远程玩家：直接使用服务器位置，确保一致性
+            self.position["x"] = position["x"]
+            self.position["y"] = position["y"]
+            
         self.last_server_sync = time.time()
     
     def update_position(self, dt: float):
@@ -547,17 +554,29 @@ class GameRoom:
         return events
     
     def get_state_if_changed(self):
-        """If state has changed, return state update message"""
-        if not self.state_changed:
-            return None
+        """如果状态已更改，返回状态更新消息 - 增强版本"""
+        # 对于游戏中的房间，总是返回状态更新以确保位置同步
+        # 对于等待中的房间，只在状态真正改变时返回
+        if self.room_state == "playing":
+            # 游戏进行中，定期同步所有玩家位置确保一致性
+            from tank_game_messages import GameStateUpdateMessage
+            return GameStateUpdateMessage(
+                players=[player.to_dict() for player in self.players.values()],
+                bullets=[bullet.to_dict() for bullet in self.bullets.values()],
+                game_time=self.game_time,
+                frame_id=self.frame_id
+            )
+        elif self.state_changed:
+            # 等待状态，只在状态变更时同步
+            self.state_changed = False
+            
+            from tank_game_messages import GameStateUpdateMessage
+            return GameStateUpdateMessage(
+                players=[player.to_dict() for player in self.players.values()],
+                bullets=[bullet.to_dict() for bullet in self.bullets.values()],
+                game_time=self.game_time,
+                frame_id=self.frame_id
+            )
         
-        self.state_changed = False
-        
-        from tank_game_messages import GameStateUpdateMessage
-        return GameStateUpdateMessage(
-            players=[player.to_dict() for player in self.players.values()],
-            bullets=[bullet.to_dict() for bullet in self.bullets.values()],
-            game_time=self.game_time,
-            frame_id=self.frame_id
-        )
+        return None
 

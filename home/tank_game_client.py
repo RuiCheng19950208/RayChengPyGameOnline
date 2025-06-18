@@ -719,15 +719,11 @@ class GameClient:
         self.input_state['mouse_clicked'] = False
     
     def update_game_objects(self, dt: float):
-        """Update game objects - fix: only update remote players, avoid duplicate updates of local player"""
-        # Only update remote players' positions, local player already updated in update_local_player
-        for player_id, player in self.players.items():
-            if player_id != self.player_id:  # Only update other players
-                # Only update if player is moving to avoid unnecessary position changes
-                if any(player.moving_directions.values()):
-                    player.update_position(dt)
+        """Update game objects - 修复：停止客户端预测远程玩家位置，完全依赖服务器状态"""
+        # 完全停止远程玩家的客户端预测，只依赖服务器发送的位置
+        # 这样确保所有客户端看到的远程玩家位置完全一致
         
-        # Update bullet positions
+        # 只更新子弹位置（子弹可以客户端预测，因为它们不受玩家控制）
         bullets_to_remove = []
         for bullet_id, bullet in self.bullets.items():
             if not bullet.update(dt):
