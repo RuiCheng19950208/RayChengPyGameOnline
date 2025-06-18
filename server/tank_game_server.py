@@ -466,29 +466,28 @@ class TankGameServer:
         await self.disconnect_client(websocket, client_id)
     
     async def handle_player_move(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerMoveMessage):
-        """Handle player movement - fix: trust client position"""
+        """Handle player movement - 事件驱动位置同步"""
         if client_id in self.players:
             player = self.players[client_id]
+            current_time = time.time()
             
-            # Check if movement actually changed to avoid redundant broadcasts
+            # 检查移动方向是否真的改变了
             directions_changed = player.moving_directions != message.direction
             
+            # 更新玩家状态
             player.moving_directions = message.direction
-            player.last_client_update = time.time()
-            player.use_client_position = True  # Mark to use client position
+            player.last_client_update = current_time
             
-            # Directly use client-sent position (trust client prediction)
+            # 信任客户端位置（客户端权威）
             if message.position:
-                # Basic anti-cheat check
+                # 基本的反作弊检查（边界检查）
                 new_x = max(0, min(SCREEN_WIDTH, message.position["x"]))
                 new_y = max(0, min(SCREEN_HEIGHT, message.position["y"]))
-                
-                # Update position
                 player.position = {"x": new_x, "y": new_y}
             
-            player.last_update = time.time()
+            player.last_update = current_time
             
-            # Find player's room
+            # 找到玩家所在房间
             player_room = None
             for room in self.rooms.values():
                 if client_id in room.players:
@@ -496,27 +495,48 @@ class TankGameServer:
                     break
             
             if player_room:
-                # Only broadcast if directions actually changed (reduce redundant messages)
-                if directions_changed:
-                    await self.broadcast_to_room(player_room.room_id, message, exclude=client_id)
+                # 只在方向改变或周期性同步时广播
+                should_broadcast = (
+                    directions_changed or  # 方向改变
+                    (current_time - player.last_movement_broadcast > 0.5)  # 或者距上次广播超过0.5秒
+                )
+                
+                if should_broadcast:
+                    player.last_movement_broadcast = current_time
+                    
+                    # 创建移动事件消息，包含权威位置信息
+                    movement_event = PlayerMoveMessage(
+                        player_id=client_id,
+                        direction=message.direction,
+                        position=player.position.copy()
+                    )
+                    
+                    # 广播给房间内其他玩家
+                    await self.broadcast_to_room(player_room.room_id, movement_event, exclude=client_id)
+                    
+                    if directions_changed:
+                        moving_keys = [k for k, v in message.direction.items() if v]
+                        print(f"🎮 Player {client_id} movement event: {moving_keys} at ({player.position['x']:.1f}, {player.position['y']:.1f})")
             else:
                 print(f"⚠️ Player {client_id} not found in any room for movement")
     
     async def handle_player_stop(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerStopMessage):
-        """Handle player stop"""
+        """Handle player stop - 立即广播停止事件"""
         if client_id in self.players:
             player = self.players[client_id]
-            player.moving_directions = {"w": False, "a": False, "s": False, "d": False}
-            player.last_client_update = time.time()
-            player.use_client_position = True
+            current_time = time.time()
             
-            # Use client-sent stop position
+            # 更新玩家状态
+            player.moving_directions = {"w": False, "a": False, "s": False, "d": False}
+            player.last_client_update = current_time
+            
+            # 使用客户端发送的最终停止位置
             if message.position:
                 new_x = max(0, min(SCREEN_WIDTH, message.position["x"]))
                 new_y = max(0, min(SCREEN_HEIGHT, message.position["y"]))
                 player.position = {"x": new_x, "y": new_y}
             
-            # Find player's room
+            # 找到玩家所在房间
             player_room = None
             for room in self.rooms.values():
                 if client_id in room.players:
@@ -524,8 +544,14 @@ class TankGameServer:
                     break
             
             if player_room:
-                # Immediately broadcast stop message (event-driven)
-                await self.broadcast_to_room(player_room.room_id, message, exclude=client_id)
+                # 立即广播停止事件
+                stop_event = PlayerStopMessage(
+                    player_id=client_id,
+                    position=player.position.copy()
+                )
+                
+                await self.broadcast_to_room(player_room.room_id, stop_event, exclude=client_id)
+                print(f"🛑 Player {client_id} stopped at ({player.position['x']:.1f}, {player.position['y']:.1f})")
             else:
                 print(f"⚠️ Player {client_id} not found in any room for stop")
     
@@ -798,11 +824,11 @@ class TankGameServer:
                     print(f"📡 Event {event.type} broadcasted to room {room_id}")
     
     async def game_loop(self):
-        """Main game loop - event-driven architecture"""
+        """Main game loop - 事件驱动架构，减少定期位置同步"""
         target_fps = 60
         dt = 1.0 / target_fps
         
-        print(f"🎮 Game loop started at {target_fps} FPS (Event-driven + Client Authority)")
+        print(f"🎮 Game loop started at {target_fps} FPS (Event-driven Position Sync)")
         
         while self.running:
             loop_start = time.time()
@@ -817,42 +843,25 @@ class TankGameServer:
                     if events:
                         await self.broadcast_events(room.room_id, events)
                     
-                    # 优化位置同步策略 - 智能同步而不是定时同步
-                    should_sync = self._should_sync_positions(room)
-                    
-                    if should_sync:
-                        state_update = room.get_state_if_changed()
-                        if state_update:
-                            await self.broadcast_to_room(room.room_id, state_update)
-                            
-                            # 减少日志输出，只在重要同步时输出
-                            if room.frame_id % 180 == 0:  # 每3秒输出一次日志
-                                moving_players = sum(1 for p in room.players.values() if any(p.moving_directions.values()))
-                                print(f"🔄 Position sync for room {room.room_id} - {moving_players}/{len(room.players)} players moving")
+                    # 大幅减少位置同步频率 - 只在特殊情况下同步
+                    if room.room_state == "playing":
+                        # 游戏中：很少进行完整状态同步，主要依赖事件驱动
+                        if room.frame_id % 300 == 0:  # 每5秒进行一次完整同步（防止累积误差）
+                            state_update = room.get_state_if_changed()
+                            if state_update:
+                                await self.broadcast_to_room(room.room_id, state_update)
+                                print(f"🔄 Periodic full sync for room {room.room_id} (anti-drift)")
+                    else:
+                        # 等待状态：低频同步
+                        if room.frame_id % 180 == 0:  # 每3秒同步一次
+                            state_update = room.get_state_if_changed()
+                            if state_update:
+                                await self.broadcast_to_room(room.room_id, state_update)
             
             # Control frame rate
             loop_time = time.time() - loop_start
             sleep_time = max(0, dt - loop_time)
             await asyncio.sleep(sleep_time)
-    
-    def _should_sync_positions(self, room) -> bool:
-        """智能决定是否需要同步位置"""
-        # 游戏未开始时，低频同步
-        if room.room_state != "playing":
-            return room.frame_id % 180 == 0  # 每3秒同步一次
-        
-        # 游戏进行中，根据玩家活动决定同步频率
-        current_time = time.time()
-        
-        # 检查是否有玩家在移动
-        moving_players = [p for p in room.players.values() if any(p.moving_directions.values())]
-        
-        if moving_players:
-            # 有玩家移动时，每15帧同步一次（每秒4次）
-            return room.frame_id % 15 == 0
-        else:
-            # 没有玩家移动时，每60帧同步一次（每秒1次）
-            return room.frame_id % 60 == 0
 
 
 async def main():

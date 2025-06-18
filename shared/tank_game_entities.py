@@ -49,133 +49,60 @@ class Player:
         self.websocket = websocket
         if websocket:
             self.last_client_update = time.time()
-            self.use_client_position = True
+            self.last_movement_broadcast = 0.0  # 上次广播移动状态的时间
             
         # Client-specific attributes (only used on client side)
         if not websocket:
             self.last_server_sync = time.time()
-            self.server_sync_threshold = 100.0
-            
-            # Enhanced client-side prediction and smoothing
-            self.server_position = {"x": 0.0, "y": 0.0}  # Last known server position
-            self.target_position = {"x": 0.0, "y": 0.0}   # Target position for interpolation
-            self.interpolation_speed = 8.0  # Higher = faster correction
-            self.prediction_time = 0.0  # How far ahead we're predicting
-            self.last_correction_time = 0.0
-            self.correction_threshold_base = 50.0  # Base threshold for corrections
-            self.correction_history = []  # Track recent corrections to avoid oscillation
+            # 事件驱动的位置同步 - 不再使用激进的位置校正
+            self.authoritative_position = {"x": 0.0, "y": 0.0}  # 权威位置（来自拥有者）
+            self.last_authoritative_update = 0.0
+            self.is_position_owner = False  # 是否是此玩家位置的拥有者
     
-    def update_from_server(self, position: Dict[str, float], directions: Dict[str, bool] = None):
-        """优化的服务器位置更新 - 减少颤动，提高一致性"""
+    def set_position_owner(self, is_owner: bool):
+        """设置是否为此玩家位置的拥有者"""
+        self.is_position_owner = is_owner
+        if is_owner:
+            # 如果是拥有者，权威位置就是当前位置
+            self.authoritative_position = self.position.copy()
+    
+    def update_from_movement_event(self, position: Dict[str, float], directions: Dict[str, bool], timestamp: float):
+        """从移动事件更新位置 - 新的事件驱动同步机制"""
         current_time = time.time()
         
+        # 更新移动方向
         if directions:
             self.moving_directions = directions.copy()
         
-        # 计算位置差异
-        dx = position["x"] - self.position["x"]
-        dy = position["y"] - self.position["y"]
-        distance = (dx * dx + dy * dy) ** 0.5
+        # 如果是位置拥有者，不接受外部位置更新
+        if hasattr(self, 'is_position_owner') and self.is_position_owner:
+            return
         
-        # 区分不同类型的玩家处理逻辑
-        if hasattr(self, 'websocket') and self.websocket:
-            # 服务器端玩家 - 保持原有的服务器逻辑
-            correction_threshold = 100.0
-            if any(self.moving_directions.values()):
-                correction_threshold = 150.0
+        # 更新权威位置
+        if hasattr(self, 'authoritative_position'):
+            self.authoritative_position = position.copy()
+            self.last_authoritative_update = current_time
             
-            if distance > correction_threshold:
-                print(f"🔧 Server correction for {self.name}: {distance:.1f}px")
+            # 计算位置差异
+            dx = position["x"] - self.position["x"]
+            dy = position["y"] - self.position["y"]
+            distance = (dx * dx + dy * dy) ** 0.5
+            
+            # 只在差异较大时才进行位置校正（减少颤动）
+            if distance > 100.0:  # 大幅提高校正阈值
+                print(f"🔧 Major position correction for {self.name}: {distance:.1f}px")
+                self.position = position.copy()
+            elif distance > 20.0:
+                # 中等差异，平滑移动
                 blend_factor = 0.1
-                self.position["x"] = self.position["x"] + (dx * blend_factor)
-                self.position["y"] = self.position["y"] + (dy * blend_factor)
-                
-        elif hasattr(self, 'is_local_player') and self.is_local_player:
-            # 本地玩家 - 不进行位置校正，完全信任客户端预测
-            pass
-            
+                self.position["x"] += dx * blend_factor
+                self.position["y"] += dy * blend_factor
+            # 小差异不校正，依赖本地预测
         else:
-            # 远程玩家 - 使用优化的平滑同步算法
-            self._update_remote_player_position(position, distance, current_time)
+            # 旧版本兼容性
+            self.position = position.copy()
         
         self.last_server_sync = current_time
-    
-    def _update_remote_player_position(self, server_position: Dict[str, float], distance: float, current_time: float):
-        """优化的远程玩家位置更新算法"""
-        # 更新服务器位置记录
-        self.server_position = server_position.copy()
-        
-        # 计算位置差异
-        dx = server_position["x"] - self.position["x"]
-        dy = server_position["y"] - self.position["y"]
-        
-        # 动态调整校正阈值
-        is_moving = any(self.moving_directions.values())
-        time_since_last_correction = current_time - self.last_correction_time
-        
-        # 基础阈值：静止时更严格，移动时更宽松
-        if is_moving:
-            base_threshold = self.correction_threshold_base * 1.5  # 75px when moving
-        else:
-            base_threshold = self.correction_threshold_base * 0.6  # 30px when stopped
-        
-        # 如果最近有过多校正，提高阈值避免振荡
-        recent_corrections = [c for c in self.correction_history if current_time - c < 1.0]
-        if len(recent_corrections) > 3:  # 1秒内超过3次校正
-            base_threshold *= 2.0
-            print(f"🔄 Anti-oscillation: raised threshold to {base_threshold:.1f}px for {self.name}")
-        
-        # 清理旧的校正记录
-        self.correction_history = [c for c in self.correction_history if current_time - c < 2.0]
-        
-        if distance > base_threshold:
-            # 需要进行位置校正
-            print(f"🔧 Remote player correction for {self.name}: {distance:.1f}px (threshold: {base_threshold:.1f}px)")
-            
-            # 记录校正时间
-            self.last_correction_time = current_time
-            self.correction_history.append(current_time)
-            
-            # 使用插值而不是直接跳跃
-            if distance > base_threshold * 3:
-                # 差异太大，直接校正
-                self.position = server_position.copy()
-                print(f"📍 Major correction: teleported {self.name} to server position")
-            else:
-                # 平滑校正：设置目标位置，逐步移动
-                self.target_position = server_position.copy()
-                
-                # 立即进行部分校正，剩余的通过插值完成
-                correction_factor = min(0.3, base_threshold / distance)
-                self.position["x"] += dx * correction_factor
-                self.position["y"] += dy * correction_factor
-                
-        elif distance > 5.0:
-            # 小幅偏差，使用温和的插值
-            self.target_position = server_position.copy()
-        else:
-            # 位置差异很小，不需要校正
-            self.target_position = self.position.copy()
-    
-    def _smooth_interpolate_position(self, dt: float):
-        """平滑插值到目标位置"""
-        if not hasattr(self, 'target_position'):
-            return
-            
-        dx = self.target_position["x"] - self.position["x"]
-        dy = self.target_position["y"] - self.position["y"]
-        distance = (dx * dx + dy * dy) ** 0.5
-        
-        if distance > 1.0:  # 只有在距离大于1px时才进行插值
-            # 计算插值步长
-            interpolation_step = self.interpolation_speed * dt
-            move_distance = min(distance, interpolation_step)
-            
-            # 移动到目标位置
-            if distance > 0:
-                move_factor = move_distance / distance
-                self.position["x"] += dx * move_factor
-                self.position["y"] += dy * move_factor
 
     def update_position(self, dt: float):
         """Update position - exactly same algorithm as server"""
@@ -200,11 +127,12 @@ class Player:
         self.position["x"] = max(0, min(SCREEN_WIDTH, self.position["x"]))
         self.position["y"] = max(0, min(SCREEN_HEIGHT, self.position["y"]))
         
-        # 对于远程玩家，在位置更新后进行平滑插值
-        if not hasattr(self, 'websocket') and not hasattr(self, 'is_local_player'):
-            self._smooth_interpolate_position(dt)
-        
         self.last_update = time.time()
+
+    # 移除旧的复杂校正方法
+    def update_from_server(self, position: Dict[str, float], directions: Dict[str, bool] = None):
+        """兼容性方法 - 重定向到新的事件驱动方法"""
+        self.update_from_movement_event(position, directions, time.time())
     
     def to_dict(self) -> Dict:
         """Convert to dictionary - for network transmission"""
