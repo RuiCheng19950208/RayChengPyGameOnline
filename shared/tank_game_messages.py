@@ -39,11 +39,13 @@ class GameMessageType(str, Enum):
     ROOM_JOIN = "room_join"
     ROOM_LEAVE = "room_leave"
     ROOM_LIST = "room_list"
+    ROOM_LIST_REQUEST = "room_list_request"
     ROOM_CREATED = "room_created"
     ROOM_START_GAME = "room_start_game"
     ROOM_END_GAME = "room_end_game"
     ROOM_UPDATE = "room_update"
     ROOM_DELETED = "room_deleted"
+    ROOM_DISBANDED = "room_disbanded"
     SERVER_LIST = "server_list"
     CREATE_ROOM_REQUEST = "create_room_request"
     SLOT_CHANGE_REQUEST = "slot_change_request"
@@ -341,6 +343,18 @@ class RoomListMessage(BaseGameMessage):
 
 
 @dataclass
+class RoomListRequestMessage(BaseGameMessage):
+    """请求房间列表消息"""
+    
+    client_id: str
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.ROOM_LIST_REQUEST
+
+
+@dataclass
 class RoomCreatedMessage(BaseGameMessage):
     """房间创建消息"""
     
@@ -421,6 +435,20 @@ class RoomDeletedMessage(BaseGameMessage):
     @property
     def type(self) -> GameMessageType:
         return GameMessageType.ROOM_DELETED
+
+
+@dataclass
+class RoomDisbandedMessage(BaseGameMessage):
+    """房间解散消息 - 房主主动解散房间"""
+    
+    room_id: str
+    disbanded_by: str  # 解散者的player_id
+    reason: str = "host_quit"  # "host_quit", "host_disconnected"
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.ROOM_DISBANDED
 
 
 @dataclass
@@ -560,9 +588,11 @@ MESSAGE_TYPE_MAP = {
     GameMessageType.ROOM_JOIN: RoomJoinMessage,
     GameMessageType.ROOM_LEAVE: RoomLeaveMessage,
     GameMessageType.ROOM_LIST: RoomListMessage,
+    GameMessageType.ROOM_LIST_REQUEST: RoomListRequestMessage,
     GameMessageType.ROOM_CREATED: RoomCreatedMessage,
     GameMessageType.CREATE_ROOM_REQUEST: CreateRoomRequestMessage,
     GameMessageType.ROOM_START_GAME: RoomStartGameMessage,
+    GameMessageType.ROOM_DISBANDED: RoomDisbandedMessage,
     GameMessageType.CONNECTION_ACK: ConnectionAckMessage,
     GameMessageType.PING: PingMessage,
     GameMessageType.PONG: PongMessage,

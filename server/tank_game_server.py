@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import threading
 
-# 添加共享目录到 Python 路径
+# 添加共享目录到 Python 路径 - 必须在导入自定义模块之前
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'shared'))
 
 from tank_game_messages import (
@@ -31,7 +31,8 @@ from tank_game_messages import (
     create_error_message, create_debug_message,
     BulletDestroyedMessage, CollisionMessage, PlayerDeathMessage,
     SlotChangeRequestMessage, SlotChangedMessage, RoomStartGameMessage,
-    CreateRoomRequestMessage, RoomCreatedMessage
+    CreateRoomRequestMessage, RoomCreatedMessage, RoomListRequestMessage,
+    RoomListMessage, RoomDisbandedMessage
 )
 
 # 导入共享的实体类
@@ -187,16 +188,12 @@ class TankGameServer:
         self.clients: Dict[WebSocketServerProtocol, str] = {}  # websocket -> client_id
         self.players: Dict[str, Player] = {}  # player_id -> Player
         self.rooms: Dict[str, GameRoom] = {}  # room_id -> GameRoom
-        self.default_room_id = "default"
         self.running = False
         self.game_loop_task: Optional[asyncio.Task] = None
         self.http_server = None
         self.http_thread = None
         
-        # 创建默认房间
-        self.rooms[self.default_room_id] = GameRoom(
-            self.default_room_id, "Default Room", "server"
-        )
+        # 不创建默认房间 - 房间应该按需创建
         
         print(f"🎮 TankGameServer initialized on {self.host}:{self.port}")
         print(f"🎯 Game config: {SCREEN_WIDTH}x{SCREEN_HEIGHT}, Speed: {TANK_SPEED}")
@@ -282,33 +279,65 @@ class TankGameServer:
             
             # 找到玩家所在的房间并移除
             rooms_to_delete = []
+            rooms_to_disband = []
+            
             for room_id, room in self.rooms.items():
                 if client_id in room.players:
                     print(f"📤 Removing player {player_name} from room {room_id}")
-                    result = room.remove_player(client_id)
                     
-                    # 广播玩家离开消息给房间内其他玩家
-                    if len(room.players) > 0:
-                        leave_message = PlayerLeaveMessage(
-                            player_id=client_id,
-                            reason="disconnected"
+                    # 检查是否为房主
+                    if room.is_host(client_id):
+                        print(f"🗑️ Host {client_id} disconnected, disbanding room {room_id}")
+                        
+                        # 创建房间解散消息
+                        disband_message = RoomDisbandedMessage(
+                            room_id=room_id,
+                            disbanded_by=client_id,
+                            reason="host_disconnected"
                         )
-                        await self.broadcast_to_room(room_id, leave_message, exclude=client_id)
-                    
-                    if result == "delete_room":
-                        # 房间空了，标记为删除
-                        rooms_to_delete.append(room_id)
-                        print(f"🗑️ Room {room_id} is empty, marking for deletion")
+                        
+                        # 广播给房间内其他玩家
+                        await self.broadcast_to_room(room_id, disband_message, exclude=client_id)
+                        
+                        # 标记房间需要解散
+                        rooms_to_disband.append(room_id)
+                    else:
+                        # 普通玩家离开
+                        room.remove_player(client_id)
+                        
+                        # 广播玩家离开消息给房间内其他玩家
+                        if len(room.players) > 0:
+                            leave_message = PlayerLeaveMessage(
+                                player_id=client_id,
+                                reason="disconnected"
+                            )
+                            await self.broadcast_to_room(room_id, leave_message, exclude=client_id)
+                        
+                        # 如果房间空了，标记为删除
+                        if len(room.players) == 0:
+                            rooms_to_delete.append(room_id)
+                            print(f"🗑️ Room {room_id} is empty, marking for deletion")
             
-            # 删除空房间（除了默认房间）
+            # 解散房主离开的房间
+            for room_id in rooms_to_disband:
+                # 移除房间内所有其他玩家
+                if room_id in self.rooms:
+                    room = self.rooms[room_id]
+                    remaining_players = [pid for pid in room.players.keys() if pid != client_id]
+                    for player_id in remaining_players:
+                        if player_id in self.players:
+                            del self.players[player_id]
+                            print(f"📤 Removed player {player_id} due to host disconnect")
+                    
+                    # 删除房间
+                    del self.rooms[room_id]
+                    print(f"🗑️ Room {room_id} disbanded due to host disconnect")
+            
+            # 删除其他空房间
             for room_id in rooms_to_delete:
-                if room_id != self.default_room_id:  # 保留默认房间
+                if room_id in self.rooms:
                     del self.rooms[room_id]
                     print(f"🗑️ Deleted empty room: {room_id}")
-                else:
-                    # 默认房间不删除，但重置房主为服务器
-                    self.rooms[room_id].host_player_id = "server"
-                    print(f"🔄 Default room reset, host is now server")
             
             # 从玩家字典中移除
             del self.players[client_id]
@@ -325,11 +354,14 @@ class TankGameServer:
         waiting_rooms = [r for r in self.rooms.values() if len(r.players) > 0 and r.room_state == "waiting"]
         print(f"📊 After disconnect - Active rooms: {len(active_rooms)}, Waiting rooms: {len(waiting_rooms)}, Total players: {len(self.players)}")
         
-        # 详细显示每个房间的状态
+        # 详细显示每个房间的状态（只显示有玩家的房间）
         for room_id, room in self.rooms.items():
-            if len(room.players) > 0 or room_id == self.default_room_id:
+            if len(room.players) > 0:
                 player_names = [p.name for p in room.players.values()]
                 print(f"📊   Room {room_id}: {len(room.players)} players {player_names}, state={room.room_state}, host={room.host_player_id}")
+        
+        if len(self.rooms) == 0:
+            print("📊 No rooms remaining - all rooms cleaned up successfully")
     
     async def handle_message(self, websocket: WebSocketServerProtocol, client_id: str, raw_message: str):
         """处理客户端消息"""
@@ -362,6 +394,8 @@ class TankGameServer:
             GameMessageType.PLAYER_SHOOT: self.handle_player_shoot,
             GameMessageType.PING: self.handle_ping,
             GameMessageType.CREATE_ROOM_REQUEST: self.handle_create_room_request,
+            GameMessageType.ROOM_LIST_REQUEST: self.handle_room_list_request,
+            GameMessageType.ROOM_DISBANDED: self.handle_room_disbanded,
             GameMessageType.SLOT_CHANGE_REQUEST: self.handle_slot_change_request,
             GameMessageType.ROOM_START_GAME: self.handle_room_start_game,
         }
@@ -383,12 +417,18 @@ class TankGameServer:
         self.players[client_id] = player
         
         # 确定要加入的房间ID
-        target_room_id = message.room_id if message.room_id else self.default_room_id
+        target_room_id = message.room_id
+        if not target_room_id:
+            # 如果没有指定房间ID，拒绝加入
+            error_msg = create_error_message("NO_ROOM_SPECIFIED", "No room ID specified")
+            await self.send_message(websocket, error_msg)
+            return
         
         # 确保目标房间存在
         if target_room_id not in self.rooms:
-            print(f"⚠️ Room {target_room_id} not found, using default room")
-            target_room_id = self.default_room_id
+            error_msg = create_error_message("ROOM_NOT_FOUND", f"Room {target_room_id} not found")
+            await self.send_message(websocket, error_msg)
+            return
         
         room = self.rooms[target_room_id]
         if room.add_player(player):
@@ -544,6 +584,69 @@ class TankGameServer:
         
         # 注意：不在这里移动玩家，等待客户端发送 PlayerJoinMessage
     
+    async def handle_room_list_request(self, websocket: WebSocketServerProtocol, client_id: str, message: RoomListRequestMessage):
+        """处理房间列表请求"""
+        # 只返回有玩家的房间，且排除默认房间如果为空
+        room_list = []
+        for room_id, room in self.rooms.items():
+            if len(room.players) > 0:  # 只显示有玩家的房间
+                room_info = {
+                    'room_id': room_id,
+                    'name': room.name,
+                    'current_players': len(room.players),
+                    'max_players': room.max_players,
+                    'room_state': room.room_state,
+                    'host_player_id': room.host_player_id
+                }
+                room_list.append(room_info)
+        
+        # 使用RoomListMessage发送响应
+        room_list_message = RoomListMessage(
+            rooms=room_list,
+            total_players=len(self.players)
+        )
+        await self.send_message(websocket, room_list_message)
+        print(f"📋 Sent room list to {client_id}: {len(room_list)} rooms")
+    
+    async def handle_room_disbanded(self, websocket: WebSocketServerProtocol, client_id: str, message):
+        """处理房间解散请求"""
+
+        if not isinstance(message, RoomDisbandedMessage):
+            return
+        
+        room_id = message.room_id
+        if room_id not in self.rooms:
+            error_msg = create_error_message("ROOM_NOT_FOUND", f"Room {room_id} not found")
+            await self.send_message(websocket, error_msg)
+            return
+        
+        room = self.rooms[room_id]
+        
+        # 验证是否为房主
+        if not room.is_host(client_id):
+            error_msg = create_error_message("NOT_HOST", "Only the host can disband the room")
+            await self.send_message(websocket, error_msg)
+            return
+        
+        print(f"🗑️ Host {client_id} is disbanding room {room_id}")
+        
+        # 广播房间解散消息给所有房间内的玩家（除房主外）
+        await self.broadcast_to_room(room_id, message, exclude=client_id)
+        
+        # 移除房间内所有玩家
+        players_to_remove = list(room.players.keys())
+        for player_id in players_to_remove:
+            if player_id in self.players:
+                del self.players[player_id]
+                print(f"📤 Removed player {player_id} due to room disbandment")
+        
+        # 删除房间
+        del self.rooms[room_id]
+        print(f"🗑️ Room {room_id} disbanded and deleted")
+        
+        # 更新连接状态
+        print(f"📊 After room disbandment - Remaining rooms: {len(self.rooms)}, Total players: {len(self.players)}")
+    
     async def handle_slot_change_request(self, websocket: WebSocketServerProtocol, client_id: str, message: SlotChangeRequestMessage):
         """处理槽位切换请求"""
         if client_id not in self.players:
@@ -551,7 +654,13 @@ class TankGameServer:
             await self.send_message(websocket, error_msg)
             return
         
-        room = self.rooms.get(message.room_id, self.rooms[self.default_room_id])
+        # 确保房间存在
+        if message.room_id not in self.rooms:
+            error_msg = create_error_message("ROOM_NOT_FOUND", f"Room {message.room_id} not found")
+            await self.send_message(websocket, error_msg)
+            return
+        
+        room = self.rooms[message.room_id]
         player = self.players[client_id]
         
         # 尝试切换槽位

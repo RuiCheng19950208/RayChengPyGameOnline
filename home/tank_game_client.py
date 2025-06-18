@@ -95,11 +95,14 @@ class GameClient:
         # 客户端状态
         self.client_id: Optional[str] = None
         self.player_id: Optional[str] = None
-        self.player_name = f"PerfectPlayer_{int(time.time()) % 10000}"
+        self.player_name = f"Player_{int(time.time()) % 10000}"
         
         # 游戏状态
         self.players: Dict[str, Player] = {}
         self.bullets: Dict[str, Bullet] = {}
+        
+        # 房间列表（用于服务器浏览器）
+        self.room_list: List[Dict[str, Any]] = []
         
         # 输入状态 - 简化的按键状态机
         self.input_state = {
@@ -109,7 +112,7 @@ class GameClient:
         }
         self.last_input_state = self.input_state.copy()
         
-        # 网络相关
+        # Ping相关
         self.ping_sequence = 0
         self.ping_times: Dict[int, float] = {}
         self.current_ping = 0
@@ -143,20 +146,15 @@ class GameClient:
                 self.font = pygame.font.Font(None, 24)
                 self.small_font = pygame.font.Font(None, 16)
                 self.big_font = pygame.font.Font(None, 32)
-                if DEFAULT_FONT_PATH:
-                    print(f"⚠️ Custom font not found: {DEFAULT_FONT_PATH}, using default font")
-                else:
-                    print("ℹ️ No custom font specified, using default font")
         except Exception as e:
-            # 加载字体时出现异常，使用默认字体
-            self.font = pygame.font.Font(None, 24)
-            self.small_font = pygame.font.Font(None, 16)
-            self.big_font = pygame.font.Font(None, 32)
             print(f"⚠️ Error loading font: {e}, using default font")
         
         # 初始化状态机
         self.state_manager = GameStateManager()
         self._register_states()
+        
+        # 自动连接到服务器
+        asyncio.create_task(self.connect())
         
         print(f"✨ GameClient initialized for {self.server_url}")
     
@@ -187,19 +185,8 @@ class GameClient:
         self.server_url = server_url
         print(f"🔄 Server URL changed to: {server_url}")
     
-    async def connect_to_server(self, server_url: str = None):
-        """连接到指定服务器"""
-        if server_url:
-            self.set_server_url(server_url)
-        
-        # 如果已经连接到其他服务器，先断开
-        if self.connected:
-            await self.disconnect()
-        
-        await self.connect()
-    
     async def connect(self):
-        """连接到服务器"""
+        """连接到服务器 - 初始化时自动连接"""
         try:
             print(f"🔗 Connecting to {self.server_url}...")
             self.websocket = await websockets.connect(self.server_url)
@@ -283,6 +270,10 @@ class GameClient:
             await self.handle_player_leave(message)
         elif message.type == GameMessageType.ROOM_CREATED:
             await self.handle_room_created(message)
+        elif message.type == GameMessageType.ROOM_LIST:
+            await self.handle_room_list(message)
+        elif message.type == GameMessageType.ROOM_DISBANDED:
+            await self.handle_room_disbanded(message)
         elif message.type == GameMessageType.SLOT_CHANGED:
             await self.handle_slot_changed(message)
         elif message.type == GameMessageType.PONG:
@@ -438,6 +429,35 @@ class GameClient:
         await self.send_message(join_message)
         print(f"📤 Sent join message for room {message.room_id}")
     
+    async def handle_room_list(self, message):
+        """处理房间列表响应"""
+        from tank_game_messages import RoomListMessage
+        if isinstance(message, RoomListMessage):
+            self.room_list = message.rooms
+            print(f"📋 Received room list: {len(self.room_list)} rooms")
+            for room in self.room_list:
+                print(f"   • {room['name']} (ID: {room['room_id']}) - {room['current_players']}/{room['max_players']} players")
+        else:
+            print(f"⚠️ Unexpected room list message type: {type(message)}")
+    
+    async def handle_room_disbanded(self, message):
+        """处理房间解散"""
+        from tank_game_messages import RoomDisbandedMessage
+        if isinstance(message, RoomDisbandedMessage):
+            print(f"🏠 Room {message.room_id} disbanded by {message.disbanded_by} (reason: {message.reason})")
+            
+            # 清理游戏状态
+            self.players.clear()
+            self.bullets.clear()
+            
+            # 如果当前在房间大厅状态，自动返回主菜单
+            current_state = self.state_manager.get_current_state_type()
+            if current_state in [GameStateType.ROOM_LOBBY, GameStateType.IN_GAME]:
+                print("🔄 Room disbanded - returning to main menu")
+                self.state_manager.change_state(GameStateType.MAIN_MENU)
+        else:
+            print(f"⚠️ Unexpected room disbanded message type: {type(message)}")
+    
     async def handle_slot_changed(self, message: SlotChangedMessage):
         """处理玩家槽位变化"""
         if message.player_id in self.players:
@@ -504,6 +524,15 @@ class GameClient:
             # 直接使用鼠标坐标
             self.input_state['mouse_pos'] = event.pos
     
+    def update_fps_counter(self):
+        """更新FPS计数器"""
+        self.frame_count += 1
+        current_time = time.time()
+        if current_time - self.last_fps_time >= 1.0:
+            self.fps_counter = self.frame_count
+            self.frame_count = 0
+            self.last_fps_time = current_time
+
     def update_local_player(self, dt: float):
         """更新本地玩家 - 与服务器完全相同的算法"""
         if not self.player_id or self.player_id not in self.players:
@@ -694,12 +723,7 @@ class GameClient:
         pygame.display.flip()
         
         # 更新 FPS 计数
-        self.frame_count += 1
-        current_time = time.time()
-        if current_time - self.last_fps_time >= 1.0:
-            self.fps_counter = self.frame_count
-            self.frame_count = 0
-            self.last_fps_time = current_time
+        self.update_fps_counter()
     
     def render_ui(self):
         """渲染 UI 信息"""
@@ -965,11 +989,7 @@ async def game_loop(client: GameClient):
         client.clock.tick(FPS)
         
         # 更新 FPS 计数
-        client.frame_count += 1
-        if current_time - client.last_fps_time >= 1.0:
-            client.fps_counter = client.frame_count
-            client.frame_count = 0
-            client.last_fps_time = current_time
+        client.update_fps_counter()
         
         # 让出控制权给其他协程
         await asyncio.sleep(0.001)
@@ -1027,28 +1047,6 @@ def determine_server_url():
             print("💡 If this fails, make sure server is running or use --host [SERVER_IP]")
     
     return server_url
-
-
-async def main():
-    """主函数 - 现在启动状态机而不是直接连接服务器"""
-    print("✨ Starting Perfect Tank Game Client with State Machine...")
-    print("=" * 50)
-    print(f"  • Fixed window size ({SCREEN_WIDTH}x{SCREEN_HEIGHT})")
-    print(f"  • State machine enabled")
-    print("=" * 50)
-    
-    # 创建客户端（但不立即连接）
-    client = GameClient()
-    
-    try:
-        # 启动状态机游戏循环
-        await game_loop(client)
-    
-    except KeyboardInterrupt:
-        print("\n🛑 Client shutting down...")
-    
-    finally:
-        await client.disconnect()
 
 
 def scan_local_servers(port: int = 8765) -> List[str]:
@@ -1115,6 +1113,35 @@ def display_connection_help():
 
     
     print("=" * 40)
+
+
+
+async def main():
+    """主函数 - 现在启动状态机而不是直接连接服务器"""
+    print("✨ Starting Perfect Tank Game Client with State Machine...")
+    print("=" * 50)
+    print(f"  • Fixed window size ({SCREEN_WIDTH}x{SCREEN_HEIGHT})")
+    print(f"  • State machine enabled")
+    print("=" * 50)
+    server_url = determine_server_url()
+    if server_url:
+        print(f"🔗 Connecting to server: {server_url}")
+    else:
+        print("❌ No server found, exiting...")
+        return
+    
+    # 创建客户端（但不立即连接）
+    client = GameClient(server_url)
+    
+    try:
+        # 启动状态机游戏循环
+        await game_loop(client)
+    
+    except KeyboardInterrupt:
+        print("\n🛑 Client shutting down...")
+    
+    finally:
+        await client.disconnect()
 
 
 if __name__ == "__main__":

@@ -89,13 +89,6 @@ class MainMenuState(GameState):
         """创建游戏"""
         print("🎮 Creating new game...")
         
-        # 首先断开任何现有连接
-        if hasattr(self.state_manager, 'client_ref') and self.state_manager.client_ref:
-            client = self.state_manager.client_ref
-            if client.connected:
-                print("🔌 Disconnecting from existing server...")
-                asyncio.create_task(client.disconnect())
-        
         # 生成唯一的房间ID
         import uuid
         room_id = f"room_{int(time.time())}_{str(uuid.uuid4())[:8]}"
@@ -152,18 +145,18 @@ class MainMenuState(GameState):
 
 
 class ServerBrowserState(GameState):
-    """服务器浏览器状态"""
+    """服务器浏览器状态 - 现在显示房间列表"""
     
     def __init__(self, state_manager):
         super().__init__(state_manager)
         self.screen_width = 800
         self.screen_height = 600
-        self.servers = []
+        self.rooms = []
         self.scanning = False
-        self.server_buttons = []
+        self.room_buttons = []
         self.back_button = None
         self.refresh_button = None
-        self.status_text = "Click Refresh to scan for servers"
+        self.status_text = "Click Refresh to scan for rooms"
         
     def enter(self, previous_state=None, **kwargs):
         """进入服务器浏览器"""
@@ -173,7 +166,7 @@ class ServerBrowserState(GameState):
         
         # 自动开始扫描
         self._start_scan()
-        print("🔍 Entered Server Browser")
+        print("🔍 Entered Room Browser")
     
     def exit(self, next_state=None):
         """离开服务器浏览器"""
@@ -203,174 +196,89 @@ class ServerBrowserState(GameState):
         )
     
     def _start_scan(self):
-        """开始扫描服务器"""
+        """开始扫描房间"""
         if self.scanning:
             return
         
         self.scanning = True
-        self.status_text = "Scanning for servers..."
-        self.servers = []
-        self.server_buttons = []
+        self.status_text = "Scanning for rooms..."
+        self.rooms = []
+        self.room_buttons = []
         
         # 异步扫描
-        asyncio.create_task(self._scan_servers())
+        asyncio.create_task(self._scan_rooms())
     
-    async def _scan_servers(self):
-        """扫描本地服务器"""
+    async def _scan_rooms(self):
+        """扫描可用房间"""
         try:
-            # 获取本地IP网段
-            local_ip = self._get_local_ip()
-            if local_ip == "127.0.0.1":
-                self.servers = []
-                self.status_text = "Could not detect local network"
+            client = self.state_manager.client_ref
+            if not client or not client.connected:
+                self.status_text = "Not connected to server"
                 self.scanning = False
                 return
             
-            # 扫描常见IP
-            ip_parts = local_ip.split('.')
-            network_base = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}"
+            # 请求房间列表
+            from tank_game_messages import RoomListRequestMessage
+            list_request = RoomListRequestMessage(client_id=client.client_id)
+            await client.send_message(list_request)
             
-            scan_ips = [
-                f"{network_base}.1",
-                f"{network_base}.100",
-                f"{network_base}.101", 
-                f"{network_base}.102",
-                local_ip,  # 本机
-            ]
+            # 等待响应
+            await asyncio.sleep(1.0)  # 给服务器时间响应
             
-            found_servers = []
-            for ip in scan_ips:
-                if await self._check_server(ip, 8765):
-                    # 获取服务器状态
-                    status = await self._get_server_status(ip, 8766)  # HTTP状态端口
-                    if status and status.get('players', 0) > 0:  # 只显示有玩家的服务器
-                        server_info = {
-                            'ip': ip,
-                            'port': 8765,
-                            'name': f"Tank Server ({ip})",
-                            'players': status['players'],
-                            'max_players': status.get('max_players', 8),
-                            'status': 'active'
-                        }
-                        found_servers.append(server_info)
-                    elif not status:
-                        # 如果无法获取状态，显示为可用服务器（向后兼容）
-                        server_info = {
-                            'ip': ip,
-                            'port': 8765,
-                            'name': f"Tank Server ({ip})",
-                            'players': '?',
-                            'max_players': 8,
-                            'status': 'available'
-                        }
-                        found_servers.append(server_info)
-            
-            self.servers = found_servers
-            self._create_server_buttons()
-            
-            if found_servers:
-                self.status_text = f"Found {len(found_servers)} active server(s) with players"
+            # 检查是否收到房间列表
+            if hasattr(client, 'room_list') and client.room_list:
+                self.rooms = client.room_list
+                self._create_room_buttons()
+                
+                if self.rooms:
+                    self.status_text = f"Found {len(self.rooms)} active room(s)"
+                else:
+                    self.status_text = "No active rooms found"
             else:
-                self.status_text = "No active servers found (empty servers are hidden)"
+                self.status_text = "No rooms available"
         
         except Exception as e:
-            print(f"❌ Scan error: {e}")
+            print(f"❌ Room scan error: {e}")
             self.status_text = f"Scan error: {e}"
         
         finally:
             self.scanning = False
     
-    def _get_local_ip(self):
-        """获取本机IP"""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-            return local_ip
-        except:
-            return "127.0.0.1"
-    
-    async def _check_server(self, ip: str, port: int) -> bool:
-        """检查服务器是否可连接 - 改用HTTP状态端口检查"""
-        try:
-            # 直接检查HTTP状态端口而不是WebSocket端口，避免握手错误
-            status_port = port + 1  # HTTP状态端口
-            future = asyncio.open_connection(ip, status_port)
-            reader, writer = await asyncio.wait_for(future, timeout=0.5)  # 更短的超时
-            writer.close()
-            await writer.wait_closed()
-            return True
-        except:
-            return False
-    
-    async def _get_server_status(self, ip: str, port: int) -> Optional[Dict]:
-        """通过HTTP获取服务器状态"""
-        try:
-            import aiohttp
-            timeout = aiohttp.ClientTimeout(total=2.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                url = f"http://{ip}:{port}/status"
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        print(f"📊 Server {ip} status: {data}")  # 调试信息
-                        return data
-        except ImportError:
-            # 如果没有aiohttp，使用urllib (同步方式)
-            try:
-                import urllib.request
-                import json
-                
-                url = f"http://{ip}:{port}/status"
-                request = urllib.request.Request(url)
-                with urllib.request.urlopen(request, timeout=2) as response:
-                    if response.getcode() == 200:
-                        data = json.loads(response.read().decode())
-                        print(f"📊 Server {ip} status: {data}")  # 调试信息
-                        return data
-            except Exception as e:
-                print(f"⚠️ HTTP status query failed for {ip}:{port} - {e}")
-        except Exception as e:
-            print(f"⚠️ HTTP status query failed for {ip}:{port} - {e}")
-        return None
-    
-    def _create_server_buttons(self):
-        """创建服务器按钮"""
-        self.server_buttons = []
+    def _create_room_buttons(self):
+        """创建房间按钮"""
+        self.room_buttons = []
         start_y = 150
         button_height = 60
         button_spacing = 10
         
-        for i, server in enumerate(self.servers):
+        for i, room in enumerate(self.rooms):
             y = start_y + i * (button_height + button_spacing)
             
-            # 服务器信息文本 - 根据状态显示不同信息
-            if server['status'] == 'active':
-                server_text = f"🎮 {server['name']} - {server['players']}/{server['max_players']} players (ACTIVE)"
-            else:
-                server_text = f"📡 {server['name']} - Available (Click to check)"
+            # 房间信息文本
+            room_text = f"🏠 {room['name']} (ID: {room['room_id']}) - {room['current_players']}/{room['max_players']} players"
+            if room.get('room_state') == 'playing':
+                room_text += " [IN GAME]"
             
             button = Button(
                 100, y, 600, button_height,
-                server_text, self.font,
-                lambda s=server: self._join_server(s)
+                room_text, self.font,
+                lambda r=room: self._join_room(r)
             )
-            self.server_buttons.append(button)
+            self.room_buttons.append(button)
     
-    def _join_server(self, server: Dict[str, Any]):
-        """加入服务器"""
-        print(f"🔗 Joining server {server['ip']}:{server['port']}")
-        server_url = f"ws://{server['ip']}:{server['port']}"
+    def _join_room(self, room_info):
+        """加入房间"""
+        if room_info.get('room_state') == 'playing':
+            print("⚠️ Cannot join room - game in progress")
+            return
         
-        self.state_manager.set_transition_data(
-            server_url=server_url,
-            server_info=server
-        )
+        print(f"🔗 Joining room {room_info['room_id']}: {room_info['name']}")
+        
         self.state_manager.change_state(
             GameStateType.ROOM_LOBBY,
             is_host=False,
-            server_url=server_url
+            room_id=room_info['room_id'],
+            room_name=room_info['name']
         )
     
     def _on_back(self):
@@ -388,7 +296,7 @@ class ServerBrowserState(GameState):
         if self.refresh_button.handle_event(event):
             return True
         
-        for button in self.server_buttons:
+        for button in self.room_buttons:
             if button.handle_event(event):
                 return True
         
@@ -399,7 +307,7 @@ class ServerBrowserState(GameState):
         surface.fill((25, 25, 35))
         
         # 标题
-        title_text = self.title_font.render("Available Servers", True, (255, 255, 255))
+        title_text = self.title_font.render("Available Rooms", True, (255, 255, 255))
         surface.blit(title_text, (50, 10))
         
         # 状态文本
@@ -410,8 +318,8 @@ class ServerBrowserState(GameState):
         self.back_button.draw(surface)
         self.refresh_button.draw(surface)
         
-        # 服务器列表
-        for button in self.server_buttons:
+        # 房间列表
+        for button in self.room_buttons:
             button.draw(surface)
         
         # 扫描指示器
@@ -433,22 +341,16 @@ class RoomLobbyState(GameState):
         self.player_slots: List[PlayerSlot] = []
         self.buttons = []
         self.client = None  # 游戏客户端引用
+        self.room_id = "default"
+        self.room_name = "Game Room"
         
     def enter(self, previous_state=None, **kwargs):
         """进入房间大厅"""
         self.is_host = kwargs.get('is_host', False)
-        server_url = kwargs.get('server_url', None)
-        self.room_id = kwargs.get('room_id', 'default')  # 获取房间ID
-        room_name = kwargs.get('room_name', 'Game Room')
+        self.room_id = kwargs.get('room_id', 'default')
+        self.room_name = kwargs.get('room_name', 'Game Room')
         
         print(f"🏠 Entering Room Lobby (Host: {self.is_host}, Room: {self.room_id})")
-        
-        # 如果从游戏状态回来，先清理客户端状态
-        if previous_state and hasattr(previous_state, '__class__') and 'InGameState' in str(previous_state.__class__):
-            print("🧹 Cleaning up after game state...")
-            if self.client:
-                self.client.players.clear()
-                self.client.bullets.clear()
         
         if not self.initialized:
             self._initialize_ui()
@@ -457,21 +359,18 @@ class RoomLobbyState(GameState):
         # 更新按钮状态
         self._update_button_states()
         
-        # 无论是房主还是加入者，都需要连接到服务器
-        if self.client:
+        # 如果客户端已连接，直接处理房间逻辑
+        if self.client and self.client.connected:
             if self.is_host:
-                # 房主连接到本地服务器并创建房间
-                local_server_url = "ws://127.0.0.1:8765"  # 本地服务器
-                print(f"🔗 Host connecting to local server: {local_server_url}")
-                asyncio.create_task(self._connect_and_create_room(local_server_url, room_name, self.room_id))
-            elif server_url:
-                # 加入者连接到指定服务器
-                print(f"🔗 Joining server: {server_url}")
-                asyncio.create_task(self._connect_to_server(server_url))
+                # 房主创建房间
+                print(f"🔗 Host creating room: {self.room_name}")
+                asyncio.create_task(self._create_room())
             else:
-                print("⚠️ No server URL provided for joining")
+                # 加入者加入现有房间
+                print(f"🔗 Joining existing room: {self.room_id}")
+                asyncio.create_task(self._join_room())
         else:
-            print("⚠️ No client reference available")
+            print("⚠️ No client connection available")
     
     def exit(self, next_state=None):
         """离开房间大厅"""
@@ -600,12 +499,27 @@ class RoomLobbyState(GameState):
     def _on_quit_game(self):
         """退出游戏"""
         print("🚪 Quitting game...")
-        if self.is_host:
-            # 房主退出，房间解散
-            print("🗑️ Dissolving room...")
-        else:
-            # 普通玩家退出
-            print("👋 Leaving room...")
+        
+        if self.client and self.client.connected:
+            if self.is_host:
+                # 房主退出，解散房间
+                print("🗑️ Host dissolving room...")
+                from tank_game_messages import RoomDisbandedMessage
+                disband_message = RoomDisbandedMessage(
+                    room_id=self.room_id,
+                    disbanded_by=self.client.player_id,
+                    reason="host_quit"
+                )
+                asyncio.create_task(self.client.send_message(disband_message))
+            else:
+                # 普通玩家退出，发送离开消息
+                print("👋 Leaving room...")
+                from tank_game_messages import PlayerLeaveMessage
+                leave_message = PlayerLeaveMessage(
+                    player_id=self.client.player_id,
+                    reason="quit"
+                )
+                asyncio.create_task(self.client.send_message(leave_message))
         
         self.state_manager.change_state(GameStateType.MAIN_MENU)
     
@@ -634,43 +548,44 @@ class RoomLobbyState(GameState):
         if hasattr(self, 'current_room') and self.current_room:
             self.update_room(self.current_room.to_dict())
     
-    async def _connect_to_server(self, server_url: str):
-        """连接到服务器"""
-        if not self.client:
+    async def _create_room(self):
+        """创建房间"""
+        if not self.client or not self.client.connected:
             return
         
         try:
-            await self.client.connect_to_server(server_url)
-            if self.client.connected:
-                print(f"✅ Connected to server: {server_url}")
+            # 发送创建房间请求
+            create_room_message = CreateRoomRequestMessage(
+                room_name=self.room_name,
+                max_players=8,
+                creator_id=self.client.player_id,
+                game_mode="classic"
+            )
+            await self.client.send_message(create_room_message)
+            print(f"📤 Sent room creation request for {self.room_name}")
         except Exception as e:
-            print(f"❌ Failed to connect: {e}")
-            # 连接失败，返回服务器浏览器
-            self.state_manager.change_state(GameStateType.SERVER_BROWSER)
-    
-    async def _connect_and_create_room(self, server_url: str, room_name: str, room_id: str):
-        """连接服务器并创建房间"""
-        if not self.client:
-            return
-        
-        try:
-            await self.client.connect_to_server(server_url)
-            if self.client.connected:
-                print(f"✅ Connected to server: {server_url}")
-                
-                # 发送创建房间请求
-                create_room_message = CreateRoomRequestMessage(
-                    room_name=room_name,
-                    max_players=8,
-                    creator_id=self.client.player_id,
-                    game_mode="classic"
-                )
-                await self.client.send_message(create_room_message)
-                print(f"📤 Sent room creation request for {room_name}")
-        except Exception as e:
-            print(f"❌ Failed to connect and create room: {e}")
-            # 连接失败，返回主菜单
+            print(f"❌ Failed to create room: {e}")
+            # 创建失败，返回主菜单
             self.state_manager.change_state(GameStateType.MAIN_MENU)
+    
+    async def _join_room(self):
+        """加入现有房间"""
+        if not self.client or not self.client.connected:
+            return
+        
+        try:
+            # 发送加入房间消息
+            join_message = PlayerJoinMessage(
+                player_id=self.client.player_id,
+                player_name=self.client.player_name,
+                room_id=self.room_id
+            )
+            await self.client.send_message(join_message)
+            print(f"📤 Sent join message for room {self.room_id}")
+        except Exception as e:
+            print(f"❌ Failed to join room: {e}")
+            # 加入失败，返回服务器浏览器
+            self.state_manager.change_state(GameStateType.SERVER_BROWSER)
     
     def update(self, dt: float):
         """更新房间大厅"""
@@ -735,35 +650,16 @@ class InGameState(GameState):
     def enter(self, previous_state=None, **kwargs):
         """进入游戏"""
         print("🎮 Entered In-Game State")
-        # 这里需要确保客户端已连接
-        if self.client and not self.client.connected:
-            # 如果还没连接，尝试连接
-            server_url = self.state_manager.get_transition_data('server_url')
-            if server_url:
-                asyncio.create_task(self._connect_and_join(server_url))
+        
+        # 清理之前游戏状态的残留数据
+        if self.client:
+            # 保留玩家数据，只清理子弹
+            self.client.bullets.clear()
+            print("🧹 Cleared bullets from previous game state")
         
     def exit(self, next_state=None):
         """离开游戏"""
         print("🚪 Exiting game state")
-    
-    async def _connect_and_join(self, server_url: str):
-        """连接服务器并加入游戏"""
-        if not self.client:
-            return
-        
-        try:
-            self.client.server_url = server_url
-            await self.client.connect()
-            
-            if self.client.connected:
-                print(f"🎮 Connected to game server: {server_url}")
-            else:
-                print("❌ Failed to connect, returning to lobby")
-                self.state_manager.change_state(GameStateType.ROOM_LOBBY)
-        
-        except Exception as e:
-            print(f"❌ Connection error: {e}")
-            self.state_manager.change_state(GameStateType.ROOM_LOBBY)
     
     def update(self, dt: float):
         """更新游戏"""
@@ -772,19 +668,24 @@ class InGameState(GameState):
     
     def handle_event(self, event: pygame.event.Event) -> bool:
         """处理游戏事件"""
-        # ESC 键返回主菜单，并断开连接
+        # ESC 键返回主菜单
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 print("🚪 ESC pressed in game, returning to main menu...")
                 
-                # 断开当前连接
+                # 发送离开房间消息
                 if self.client and self.client.connected:
-                    asyncio.create_task(self.client.disconnect())
+                    # 发送玩家离开消息
+                    leave_message = PlayerLeaveMessage(
+                        player_id=self.client.player_id,
+                        reason="exit_game"
+                    )
+                    asyncio.create_task(self.client.send_message(leave_message))
                 
-                # 清理客户端状态
+                # 清理游戏状态
                 if self.client:
-                    self.client.players.clear()
                     self.client.bullets.clear()
+                    self.client.players.clear()
                 
                 # 返回主菜单
                 self.state_manager.change_state(GameStateType.MAIN_MENU)
@@ -814,7 +715,7 @@ class InGameState(GameState):
             # 显示连接状态
             font = pygame.font.Font(None, 36)
             if not self.client.connected:
-                text = font.render("Connecting to server...", True, (255, 255, 100))
+                text = font.render("Not connected to server", True, (255, 255, 100))
             else:
                 text = font.render("Waiting for players...", True, (255, 255, 100))
             
@@ -823,6 +724,6 @@ class InGameState(GameState):
             
             # 显示返回提示
             small_font = pygame.font.Font(None, 24)
-            hint_text = small_font.render("Press ESC to return", True, (200, 200, 200))
+            hint_text = small_font.render("Press ESC to return to main menu", True, (200, 200, 200))
             hint_rect = hint_text.get_rect(center=(400, 350))
             surface.blit(hint_text, hint_rect) 

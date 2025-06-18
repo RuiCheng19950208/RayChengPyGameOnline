@@ -361,4 +361,118 @@ class GameRoom:
         
         occupied_slots = self.get_occupied_slots()
         return slot_index not in occupied_slots
+    
+    def update_physics(self, dt: float) -> List:
+        """更新物理状态并返回事件列表"""
+        events = []
+        
+        # 更新帧ID和游戏时间
+        self.frame_id += 1
+        self.game_time += dt
+        
+        # 如果房间不在游戏状态，不进行物理更新
+        if self.room_state != "playing":
+            return events
+        
+        # 更新子弹位置
+        bullets_to_remove = []
+        for bullet_id, bullet in self.bullets.items():
+            if not bullet.update(dt):
+                bullets_to_remove.append(bullet_id)
+                # 创建子弹销毁事件
+                from tank_game_messages import BulletDestroyedMessage
+                bullet_destroyed_event = BulletDestroyedMessage(
+                    bullet_id=bullet_id,
+                    reason="expired"
+                )
+                events.append(bullet_destroyed_event)
+        
+        # 移除无效子弹
+        for bullet_id in bullets_to_remove:
+            del self.bullets[bullet_id]
+        
+        # 碰撞检测
+        collision_events = self._check_collisions()
+        events.extend(collision_events)
+        
+        # 标记状态已更改
+        if events:
+            self.state_changed = True
+        
+        return events
+    
+    def _check_collisions(self) -> List:
+        """检测碰撞并返回碰撞事件"""
+        events = []
+        bullets_to_remove = []
+        
+        for bullet_id, bullet in self.bullets.items():
+            for player_id, player in self.players.items():
+                # 跳过子弹拥有者
+                if bullet.owner_id == player_id or not player.is_alive:
+                    continue
+                
+                # 简单的碰撞检测（圆形碰撞）
+                dx = bullet.position['x'] - player.position['x']
+                dy = bullet.position['y'] - player.position['y']
+                distance = (dx * dx + dy * dy) ** 0.5
+                
+                if distance < 25:  # 碰撞半径
+                    # 创建碰撞事件
+                    player.health -= bullet.damage
+                    
+                    from tank_game_messages import CollisionMessage
+                    collision_event = CollisionMessage(
+                        bullet_id=bullet_id,
+                        target_player_id=player_id,
+                        damage_dealt=bullet.damage,
+                        new_health=player.health,
+                        collision_position=bullet.position.copy()
+                    )
+                    events.append(collision_event)
+                    
+                    # 标记子弹待删除
+                    bullets_to_remove.append(bullet_id)
+                    
+                    # 检查玩家是否死亡
+                    if player.health <= 0:
+                        player.is_alive = False
+                        from tank_game_messages import PlayerDeathMessage
+                        death_event = PlayerDeathMessage(
+                            player_id=player_id,
+                            killer_id=bullet.owner_id,
+                            death_position=player.position.copy()
+                        )
+                        events.append(death_event)
+                    
+                    break  # 子弹只能击中一个目标
+        
+        # 移除碰撞的子弹
+        for bullet_id in bullets_to_remove:
+            if bullet_id in self.bullets:
+                del self.bullets[bullet_id]
+                # 创建子弹销毁事件
+                from tank_game_messages import BulletDestroyedMessage
+                bullet_destroyed_event = BulletDestroyedMessage(
+                    bullet_id=bullet_id,
+                    reason="collision"
+                )
+                events.append(bullet_destroyed_event)
+        
+        return events
+    
+    def get_state_if_changed(self):
+        """如果状态有变化，返回状态更新消息"""
+        if not self.state_changed:
+            return None
+        
+        self.state_changed = False
+        
+        from tank_game_messages import GameStateUpdateMessage
+        return GameStateUpdateMessage(
+            players=[player.to_dict() for player in self.players.values()],
+            bullets=[bullet.to_dict() for bullet in self.bullets.values()],
+            game_time=self.game_time,
+            frame_id=self.frame_id
+        )
 
