@@ -466,7 +466,7 @@ class TankGameServer:
         await self.disconnect_client(websocket, client_id)
     
     async def handle_player_move(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerMoveMessage):
-        """Handle player movement - 事件驱动位置同步"""
+        """Handle player movement - 服务器权威位置计算"""
         if client_id in self.players:
             player = self.players[client_id]
             current_time = time.time()
@@ -474,17 +474,18 @@ class TankGameServer:
             # 检查移动方向是否真的改变了
             directions_changed = player.moving_directions != message.direction
             
-            # 更新玩家状态
+            # 更新玩家移动方向（服务器是状态权威）
             player.moving_directions = message.direction
             player.last_client_update = current_time
             
-            # 信任客户端位置（客户端权威）
-            if message.position:
-                # 基本的反作弊检查（边界检查）
-                new_x = max(0, min(SCREEN_WIDTH, message.position["x"]))
-                new_y = max(0, min(SCREEN_HEIGHT, message.position["y"]))
-                player.position = {"x": new_x, "y": new_y}
+            # 服务器不信任客户端位置，只信任移动方向
+            # 服务器基于自己的算法计算位置
+            dt = current_time - player.last_update
+            if dt > 0.1:  # 限制最大dt，避免大幅跳跃
+                dt = 0.1
             
+            # 使用服务器端统一的位置算法
+            self._update_player_position_server_authoritative(player, dt)
             player.last_update = current_time
             
             # 找到玩家所在房间
@@ -495,33 +496,47 @@ class TankGameServer:
                     break
             
             if player_room:
-                # 只在方向改变或周期性同步时广播
-                should_broadcast = (
-                    directions_changed or  # 方向改变
-                    (current_time - player.last_movement_broadcast > 0.5)  # 或者距上次广播超过0.5秒
+                # 立即广播服务器计算的权威位置
+                authoritative_event = PlayerMoveMessage(
+                    player_id=client_id,
+                    direction=message.direction,
+                    position=player.position.copy()  # 使用服务器计算的位置
                 )
                 
-                if should_broadcast:
-                    player.last_movement_broadcast = current_time
-                    
-                    # 创建移动事件消息，包含权威位置信息
-                    movement_event = PlayerMoveMessage(
-                        player_id=client_id,
-                        direction=message.direction,
-                        position=player.position.copy()
-                    )
-                    
-                    # 广播给房间内其他玩家
-                    await self.broadcast_to_room(player_room.room_id, movement_event, exclude=client_id)
-                    
-                    if directions_changed:
-                        moving_keys = [k for k, v in message.direction.items() if v]
-                        print(f"🎮 Player {client_id} movement event: {moving_keys} at ({player.position['x']:.1f}, {player.position['y']:.1f})")
+                # 广播给房间内所有玩家（包括发送者，确保位置一致）
+                await self.broadcast_to_room(player_room.room_id, authoritative_event)
+                
+                if directions_changed:
+                    moving_keys = [k for k, v in message.direction.items() if v]
+                    print(f"🎮 Server authoritative move: {client_id} {moving_keys} at ({player.position['x']:.1f}, {player.position['y']:.1f})")
             else:
                 print(f"⚠️ Player {client_id} not found in any room for movement")
     
+    def _update_player_position_server_authoritative(self, player: Player, dt: float):
+        """服务器权威位置计算 - 确保所有客户端看到相同结果"""
+        speed = TANK_SPEED
+        velocity = {"x": 0.0, "y": 0.0}
+        
+        # 基于移动方向计算速度（与客户端完全相同的算法）
+        if player.moving_directions["w"]:
+            velocity["y"] -= speed
+        if player.moving_directions["s"]:
+            velocity["y"] += speed
+        if player.moving_directions["a"]:
+            velocity["x"] -= speed
+        if player.moving_directions["d"]:
+            velocity["x"] += speed
+        
+        # 更新位置
+        player.position["x"] += velocity["x"] * dt
+        player.position["y"] += velocity["y"] * dt
+        
+        # 边界检查
+        player.position["x"] = max(0, min(SCREEN_WIDTH, player.position["x"]))
+        player.position["y"] = max(0, min(SCREEN_HEIGHT, player.position["y"]))
+    
     async def handle_player_stop(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerStopMessage):
-        """Handle player stop - 立即广播停止事件"""
+        """Handle player stop - 服务器权威停止位置"""
         if client_id in self.players:
             player = self.players[client_id]
             current_time = time.time()
@@ -530,11 +545,14 @@ class TankGameServer:
             player.moving_directions = {"w": False, "a": False, "s": False, "d": False}
             player.last_client_update = current_time
             
-            # 使用客户端发送的最终停止位置
-            if message.position:
-                new_x = max(0, min(SCREEN_WIDTH, message.position["x"]))
-                new_y = max(0, min(SCREEN_HEIGHT, message.position["y"]))
-                player.position = {"x": new_x, "y": new_y}
+            # 服务器计算最终停止位置（不信任客户端位置）
+            dt = current_time - player.last_update
+            if dt > 0.1:
+                dt = 0.1
+            
+            # 使用服务器最后的移动计算最终位置
+            self._update_player_position_server_authoritative(player, dt)
+            player.last_update = current_time
             
             # 找到玩家所在房间
             player_room = None
@@ -544,14 +562,15 @@ class TankGameServer:
                     break
             
             if player_room:
-                # 立即广播停止事件
-                stop_event = PlayerStopMessage(
+                # 广播服务器权威的停止位置
+                authoritative_stop = PlayerStopMessage(
                     player_id=client_id,
-                    position=player.position.copy()
+                    position=player.position.copy()  # 服务器计算的权威位置
                 )
                 
-                await self.broadcast_to_room(player_room.room_id, stop_event, exclude=client_id)
-                print(f"🛑 Player {client_id} stopped at ({player.position['x']:.1f}, {player.position['y']:.1f})")
+                # 广播给房间内所有玩家（包括发送者）
+                await self.broadcast_to_room(player_room.room_id, authoritative_stop)
+                print(f"🛑 Server authoritative stop: {client_id} at ({player.position['x']:.1f}, {player.position['y']:.1f})")
             else:
                 print(f"⚠️ Player {client_id} not found in any room for stop")
     
@@ -824,11 +843,11 @@ class TankGameServer:
                     print(f"📡 Event {event.type} broadcasted to room {room_id}")
     
     async def game_loop(self):
-        """Main game loop - 事件驱动架构，减少定期位置同步"""
+        """Main game loop - 增强的服务器权威位置同步"""
         target_fps = 60
         dt = 1.0 / target_fps
         
-        print(f"🎮 Game loop started at {target_fps} FPS (Event-driven Position Sync)")
+        print(f"🎮 Game loop started at {target_fps} FPS (Server Authoritative Position)")
         
         while self.running:
             loop_start = time.time()
@@ -836,6 +855,9 @@ class TankGameServer:
             # Update game state for all rooms
             for room in self.rooms.values():
                 if room.players:  # Only update rooms with players
+                    # 服务器端持续更新所有玩家位置
+                    self._update_all_players_positions(room, dt)
+                    
                     # Physics update, get events
                     events = room.update_physics(dt)
                     
@@ -843,17 +865,14 @@ class TankGameServer:
                     if events:
                         await self.broadcast_events(room.room_id, events)
                     
-                    # 大幅减少位置同步频率 - 只在特殊情况下同步
+                    # 增加位置同步频率以确保一致性
                     if room.room_state == "playing":
-                        # 游戏中：很少进行完整状态同步，主要依赖事件驱动
-                        if room.frame_id % 300 == 0:  # 每5秒进行一次完整同步（防止累积误差）
-                            state_update = room.get_state_if_changed()
-                            if state_update:
-                                await self.broadcast_to_room(room.room_id, state_update)
-                                print(f"🔄 Periodic full sync for room {room.room_id} (anti-drift)")
+                        # 游戏中：每10帧同步一次位置（每秒6次）
+                        if room.frame_id % 10 == 0:
+                            await self._broadcast_authoritative_positions(room)
                     else:
-                        # 等待状态：低频同步
-                        if room.frame_id % 180 == 0:  # 每3秒同步一次
+                        # 等待状态：每60帧同步一次
+                        if room.frame_id % 60 == 0:
                             state_update = room.get_state_if_changed()
                             if state_update:
                                 await self.broadcast_to_room(room.room_id, state_update)
@@ -862,6 +881,50 @@ class TankGameServer:
             loop_time = time.time() - loop_start
             sleep_time = max(0, dt - loop_time)
             await asyncio.sleep(sleep_time)
+    
+    def _update_all_players_positions(self, room, dt: float):
+        """更新房间内所有玩家的位置（服务器权威）"""
+        current_time = time.time()
+        
+        for player in room.players.values():
+            # 只更新正在移动的玩家
+            if any(player.moving_directions.values()):
+                # 计算自上次更新以来的时间
+                actual_dt = current_time - player.last_update
+                if actual_dt > 0.001:  # 避免过小的dt
+                    if actual_dt > 0.1:  # 限制最大dt
+                        actual_dt = 0.1
+                    
+                    self._update_player_position_server_authoritative(player, actual_dt)
+                    player.last_update = current_time
+    
+    async def _broadcast_authoritative_positions(self, room):
+        """广播服务器权威位置"""
+        # 创建权威位置更新消息
+        position_updates = []
+        
+        for player in room.players.values():
+            position_update = {
+                'player_id': player.player_id,
+                'position': player.position.copy(),
+                'moving_directions': player.moving_directions.copy(),
+                'timestamp': time.time()
+            }
+            position_updates.append(position_update)
+        
+        # 使用GameStateUpdate消息广播
+        authoritative_state = GameStateUpdateMessage(
+            players=[p.to_dict() for p in room.players.values()],
+            bullets=[b.to_dict() for b in room.bullets.values()],
+            game_time=room.game_time,
+            frame_id=room.frame_id
+        )
+        
+        await self.broadcast_to_room(room.room_id, authoritative_state)
+        
+        # 调试信息
+        moving_count = sum(1 for p in room.players.values() if any(p.moving_directions.values()))
+        print(f"🔄 Authoritative position sync: {moving_count}/{len(room.players)} players moving")
 
 
 async def main():
