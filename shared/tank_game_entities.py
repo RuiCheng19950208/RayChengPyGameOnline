@@ -106,29 +106,24 @@ class Player:
         ]
     
     def update_deterministic_position(self, dt: float):
-        """确定性位置更新 - 基于按键状态历史"""
+        """确定性位置更新 - 基于按键状态历史，修复速度问题"""
         current_time = time.time()
         
-        # 从基准点开始计算当前位置
-        calculated_position = self.base_position.copy()
-        simulation_time = self.base_timestamp
-        
-        # 应用当前移动状态到现在
-        time_elapsed = current_time - self.base_timestamp
-        if time_elapsed > 0 and any(self.moving_directions.values()):
+        # 使用增量移动而不是累积计算
+        if any(self.moving_directions.values()):
             velocity = self._calculate_velocity_from_directions(self.moving_directions)
-            calculated_position["x"] += velocity["x"] * time_elapsed
-            calculated_position["y"] += velocity["y"] * time_elapsed
+            
+            # 直接使用dt进行增量移动（TANK_SPEED = 300像素/秒）
+            self.display_position["x"] += velocity["x"] * dt
+            self.display_position["y"] += velocity["y"] * dt
             
             # 边界检查
-            calculated_position["x"] = max(0, min(SCREEN_WIDTH, calculated_position["x"]))
-            calculated_position["y"] = max(0, min(SCREEN_HEIGHT, calculated_position["y"]))
-        
-        # 平滑插值到计算位置
-        if self.smooth_enabled:
-            self._smooth_to_position(calculated_position, dt)
-        else:
-            self.display_position = calculated_position.copy()
+            self.display_position["x"] = max(0, min(SCREEN_WIDTH, self.display_position["x"]))
+            self.display_position["y"] = max(0, min(SCREEN_HEIGHT, self.display_position["y"]))
+            
+            # 更新基准位置和时间戳（避免累积误差）
+            self.base_position = self.display_position.copy()
+            self.base_timestamp = current_time
         
         # 更新实际位置
         self.position = self.display_position.copy()
