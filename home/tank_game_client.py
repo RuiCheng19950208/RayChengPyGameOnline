@@ -720,10 +720,15 @@ class GameClient:
     
     def update_game_objects(self, dt: float):
         """Update game objects - 修复：停止客户端预测远程玩家位置，完全依赖服务器状态"""
-        # 完全停止远程玩家的客户端预测，只依赖服务器发送的位置
-        # 这样确保所有客户端看到的远程玩家位置完全一致
+        # Completely stop the client prediction of remote players, only rely on the server to send positions
+        # This ensures that all clients see the remote player positions exactly the same
         
-        # 只更新子弹位置（子弹可以客户端预测，因为它们不受玩家控制）
+        # Update remote players with smooth interpolation
+        for player_id, player in self.players.items():
+            if player_id != self.player_id:  # Only update remote players
+                player.update_remote_interpolation(dt)
+        
+        # Only update bullet positions (bullets can be client predicted, because they are not controlled by players)
         bullets_to_remove = []
         for bullet_id, bullet in self.bullets.items():
             if not bullet.update(dt):
