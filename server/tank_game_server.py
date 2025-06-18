@@ -963,7 +963,7 @@ class TankGameServer:
                     player.last_update = current_time
     
     async def _broadcast_position_correction(self, room):
-        """广播位置校正 - 仅用于防止累积误差"""
+        """广播位置校正 - 仅用于防止累积误差，但必须包含完整子弹信息"""
         # 只在有显著位置差异时才发送校正
         corrections_needed = []
         
@@ -973,16 +973,16 @@ class TankGameServer:
                 corrections_needed.append(player)
         
         if corrections_needed:
-            # 发送轻量级的位置校正消息
+            # 发送位置校正消息 - 必须包含完整的子弹信息！
             correction_state = GameStateUpdateMessage(
                 players=[p.to_dict() for p in corrections_needed],
-                bullets=[],  # 位置校正不包含子弹信息
+                bullets=[bullet.to_dict() for bullet in room.bullets.values()],  # 修复：包含完整子弹信息
                 game_time=room.game_time,
                 frame_id=room.frame_id
             )
             
             await self.broadcast_to_room(room.room_id, correction_state)
-            print(f"🔧 Position correction: {len(corrections_needed)}/{len(room.players)} players")
+            print(f"🔧 Position correction: {len(corrections_needed)}/{len(room.players)} players, {len(room.bullets)} bullets")
 
 
 async def main():

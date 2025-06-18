@@ -377,19 +377,9 @@ class GameRoom:
             self.game_start_time = time.time()  # Record game start time
             self.state_changed = True
             
-            # Special case: if only one player, they win immediately
-            if len(self.players) == 1:
-                winner = list(self.players.values())[0]
-                from tank_game_messages import GameVictoryMessage
-                victory_event = GameVictoryMessage(
-                    winner_player_id=winner.player_id,
-                    winner_player_name=winner.name,
-                    room_id=self.room_id,
-                    game_duration=0.0,
-                    total_players=1
-                )
-                self.pending_events.append(victory_event)
-                self.end_game()
+            # 移除单人立即胜利的不合理逻辑
+            # 单人游戏可以正常进行，用于练习或测试
+            print(f"🚀 Game started with {len(self.players)} player(s)")
             
             return True
         return False
@@ -621,8 +611,9 @@ class GameRoom:
             )
             events.append(defeat_event)
         
-        # Check if only one player remains alive (victory condition)
-        if len(alive_players) == 1:
+        # 修复胜利条件：只在多人游戏中才触发胜利
+        # 单人游戏中玩家死亡后不会有胜利者
+        if len(alive_players) == 1 and len(self.players) > 1:
             winner = alive_players[0]
             current_time = time.time()
             game_duration = current_time - self.game_start_time if self.game_start_time else 0.0
@@ -639,6 +630,15 @@ class GameRoom:
             
             # End the game
             self.end_game()
+            print(f"🏆 Victory! {winner.name} wins in multiplayer game ({len(self.players)} players)")
+        elif len(alive_players) == 0:
+            # 所有玩家都死了，游戏结束但没有胜利者
+            self.end_game()
+            print(f"💀 Game over! All players eliminated")
+        elif len(self.players) == 1 and len(alive_players) == 0:
+            # 单人游戏中玩家死亡，游戏结束
+            self.end_game()
+            print(f"💀 Single player game over")
         
         return events
     
