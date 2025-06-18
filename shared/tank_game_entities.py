@@ -200,16 +200,29 @@ class GameRoom:
         if len(self.players) >= self.max_players:
             return False
         
-        # 计算玩家的槽位索引
-        slot_index = len(self.players)
-        player.slot_index = slot_index
+        # 找到最低的可用槽位索引
+        occupied_slots = [p.slot_index for p in self.players.values()]
+        available_slot = None
+        for i in range(self.max_players):
+            if i not in occupied_slots:
+                available_slot = i
+                break
+        
+        if available_slot is None:
+            print(f"⚠️ No available slots found in room with {len(self.players)} players")
+            return False
+        
+        # 设置玩家的槽位索引
+        player.slot_index = available_slot
         
         # 根据槽位计算生成位置
-        spawn_position = self._calculate_spawn_position(slot_index)
+        spawn_position = self._calculate_spawn_position(available_slot)
         player.position = spawn_position
         
         self.players[player.player_id] = player
         self.state_changed = True
+        
+        print(f"🎮 Player {player.player_id} assigned to slot {available_slot}")
         return True
     
     def _calculate_spawn_position(self, slot_index: int) -> Dict[str, float]:

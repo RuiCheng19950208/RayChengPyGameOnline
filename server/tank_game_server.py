@@ -483,8 +483,18 @@ class TankGameServer:
             
             player.last_update = time.time()
             
-            # 立即广播移动消息（事件驱动）
-            await self.broadcast_to_room(self.default_room_id, message, exclude=client_id)
+            # 找到玩家所在的房间
+            player_room = None
+            for room in self.rooms.values():
+                if client_id in room.players:
+                    player_room = room
+                    break
+            
+            if player_room:
+                # 立即广播移动消息（事件驱动）
+                await self.broadcast_to_room(player_room.room_id, message, exclude=client_id)
+            else:
+                print(f"⚠️ Player {client_id} not found in any room for movement")
     
     async def handle_player_stop(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerStopMessage):
         """处理玩家停止"""
@@ -500,8 +510,18 @@ class TankGameServer:
                 new_y = max(0, min(SCREEN_HEIGHT, message.position["y"]))
                 player.position = {"x": new_x, "y": new_y}
             
-            # 立即广播停止消息（事件驱动）
-            await self.broadcast_to_room(self.default_room_id, message, exclude=client_id)
+            # 找到玩家所在的房间
+            player_room = None
+            for room in self.rooms.values():
+                if client_id in room.players:
+                    player_room = room
+                    break
+            
+            if player_room:
+                # 立即广播停止消息（事件驱动）
+                await self.broadcast_to_room(player_room.room_id, message, exclude=client_id)
+            else:
+                print(f"⚠️ Player {client_id} not found in any room for stop")
     
     async def handle_player_shoot(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerShootMessage):
         """处理玩家射击"""
