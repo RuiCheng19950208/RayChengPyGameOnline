@@ -55,167 +55,115 @@ class Player:
         if not websocket:
             self.last_server_sync = time.time()
             
-            # 优化的平滑插值系统
-            self.server_position = {"x": 0.0, "y": 0.0}  # 服务器权威位置
-            self.display_position = {"x": 0.0, "y": 0.0}  # 实际显示位置（插值后）
-            self.interpolation_target = {"x": 0.0, "y": 0.0}  # 插值目标位置
-            self.interpolation_speed = 12.0  # 插值速度系数（提高响应性）
-            self.prediction_enabled = True  # 是否启用本地预测
+            # 确定性位置同步系统
+            self.key_state_history = []  # 按键状态历史 [(timestamp, key_states), ...]
+            self.base_position = {"x": 0.0, "y": 0.0}  # 基准位置
+            self.base_timestamp = time.time()  # 基准时间戳
+            self.display_position = {"x": 0.0, "y": 0.0}  # 显示位置
             
-            # 优化的权威位置系统
-            self.last_server_update = 0.0
-            self.server_sync_threshold = 0.15  # 同步阈值时间（增加容忍度）
-            self.position_correction_threshold = 50.0  # 位置校正阈值（增加到50px）
-            self.minor_correction_threshold = 15.0  # 小幅校正阈值
+            # 平滑参数
+            self.smooth_enabled = True
+            self.correction_threshold = 10.0  # 位置校正阈值
+            self.interpolation_speed = 15.0  # 插值速度
             
-            # 稳定性控制
-            self.correction_dampening = 0.3  # 校正阻尼系数
-            self.prediction_weight_max = 0.6  # 最大预测权重
-            self.stable_threshold = 3.0  # 稳定阈值（像素）
-            
-            # 初始化显示位置
-            self.server_position = self.position.copy()
+            # 初始化
+            self.base_position = self.position.copy()
             self.display_position = self.position.copy()
-            self.interpolation_target = self.position.copy()
     
-    def update_from_server_authoritative(self, server_data: Dict[str, float], directions: Dict[str, bool] = None):
-        """从服务器权威位置更新 - 优化的平滑插值"""
+    def update_from_key_event(self, key_states: Dict[str, bool], server_timestamp: float, server_position: Dict[str, float] = None):
+        """基于按键事件更新位置 - 确定性同步"""
         current_time = time.time()
         
-        # 更新服务器权威位置
-        old_server_position = self.server_position.copy()
-        self.server_position = server_data.copy()
-        self.last_server_update = current_time
+        # 更新按键状态
+        self.moving_directions = key_states.copy()
         
-        # 更新移动方向
-        if directions:
-            self.moving_directions = directions.copy()
-        
-        # 计算位置差异
-        dx = self.server_position["x"] - self.display_position["x"]
-        dy = self.server_position["y"] - self.display_position["y"]
-        distance = (dx * dx + dy * dy) ** 0.5
-        
-        # 计算服务器位置变化（检测大幅跳跃）
-        server_dx = self.server_position["x"] - old_server_position["x"]
-        server_dy = self.server_position["y"] - old_server_position["y"]
-        server_change = (server_dx * server_dx + server_dy * server_dy) ** 0.5
-        
-        if distance > self.position_correction_threshold or server_change > 100.0:
-            # 差异过大或服务器位置大幅跳跃，立即校正
-            self.display_position = self.server_position.copy()
-            self.interpolation_target = self.server_position.copy()
-            self.position = self.display_position.copy()
-            print(f"🔧 Major correction: {distance:.1f}px (instant)")
-        elif distance > self.stable_threshold:
-            # 需要平滑校正
-            self.interpolation_target = self.server_position.copy()
-            print(f"🎯 Smooth correction: {distance:.1f}px")
-        else:
-            # 位置很接近，小幅调整目标
-            self.interpolation_target = self.server_position.copy()
-    
-    def update_display_position(self, dt: float):
-        """更新显示位置 - 优化的平滑插值和预测"""
-        current_time = time.time()
-        
-        # 检查是否需要本地预测
-        time_since_server_update = current_time - self.last_server_update
-        is_moving = any(self.moving_directions.values())
-        should_predict = (self.prediction_enabled and 
-                         time_since_server_update < 1.5 and  # 增加预测时间窗口
-                         is_moving)
-        
-        if should_predict:
-            # 优化的本地预测
-            predicted_position = self._predict_position_optimized(dt, time_since_server_update)
-            
-            # 动态调整预测权重（根据延迟和移动状态）
-            max_weight = self.prediction_weight_max
-            weight_factor = min(time_since_server_update / 0.5, 1.0)  # 0.5秒内权重逐渐增加
-            blend_factor = max_weight * weight_factor
-            
-            # 计算到服务器位置的距离，距离越大预测权重越小
-            dx = self.server_position["x"] - self.display_position["x"]
-            dy = self.server_position["y"] - self.display_position["y"]
+        # 如果有服务器位置，进行校正
+        if server_position:
+            dx = server_position["x"] - self.display_position["x"]
+            dy = server_position["y"] - self.display_position["y"]
             distance = (dx * dx + dy * dy) ** 0.5
             
-            if distance > self.minor_correction_threshold:
-                blend_factor *= 0.5  # 距离大时减少预测权重
+            if distance > self.correction_threshold:
+                # 校正基准位置和时间
+                self.base_position = server_position.copy()
+                self.base_timestamp = server_timestamp
+                self.display_position = server_position.copy()
+                self.position = self.display_position.copy()
+                print(f"🔧 Key event correction: {distance:.1f}px")
+            else:
+                # 小幅校正，设置新的基准点
+                self.base_position = self.display_position.copy()
+                self.base_timestamp = current_time
+        
+        # 记录按键事件（用于状态重放）
+        self.key_state_history.append((server_timestamp, key_states.copy()))
+        
+        # 清理旧的历史记录（保留最近1秒）
+        cutoff_time = current_time - 1.0
+        self.key_state_history = [
+            (ts, keys) for ts, keys in self.key_state_history 
+            if ts > cutoff_time
+        ]
+    
+    def update_deterministic_position(self, dt: float):
+        """确定性位置更新 - 基于按键状态历史"""
+        current_time = time.time()
+        
+        # 从基准点开始计算当前位置
+        calculated_position = self.base_position.copy()
+        simulation_time = self.base_timestamp
+        
+        # 应用当前移动状态到现在
+        time_elapsed = current_time - self.base_timestamp
+        if time_elapsed > 0 and any(self.moving_directions.values()):
+            velocity = self._calculate_velocity_from_directions(self.moving_directions)
+            calculated_position["x"] += velocity["x"] * time_elapsed
+            calculated_position["y"] += velocity["y"] * time_elapsed
             
-            # 混合预测位置和服务器位置
-            target_x = (1 - blend_factor) * self.server_position["x"] + blend_factor * predicted_position["x"]
-            target_y = (1 - blend_factor) * self.server_position["y"] + blend_factor * predicted_position["y"]
-            
-            self.interpolation_target = {"x": target_x, "y": target_y}
+            # 边界检查
+            calculated_position["x"] = max(0, min(SCREEN_WIDTH, calculated_position["x"]))
+            calculated_position["y"] = max(0, min(SCREEN_HEIGHT, calculated_position["y"]))
+        
+        # 平滑插值到计算位置
+        if self.smooth_enabled:
+            self._smooth_to_position(calculated_position, dt)
         else:
-            # 不预测，直接使用服务器位置作为目标
-            self.interpolation_target = self.server_position.copy()
+            self.display_position = calculated_position.copy()
         
-        # 优化的平滑插值
-        self._smooth_interpolate_optimized(dt)
-        
-        # 更新实际位置为显示位置
+        # 更新实际位置
         self.position = self.display_position.copy()
     
-    def _predict_position_optimized(self, dt: float, time_since_update: float) -> Dict[str, float]:
-        """优化的位置预测 - 考虑延迟和加速度"""
+    def _calculate_velocity_from_directions(self, directions: Dict[str, bool]) -> Dict[str, float]:
+        """基于移动方向计算速度向量"""
         speed = TANK_SPEED
-        predicted_pos = self.server_position.copy()
-        
-        # 计算预测速度
         velocity = {"x": 0.0, "y": 0.0}
-        if self.moving_directions["w"]:
+        
+        if directions.get("w", False):
             velocity["y"] -= speed
-        if self.moving_directions["s"]:
+        if directions.get("s", False):
             velocity["y"] += speed
-        if self.moving_directions["a"]:
+        if directions.get("a", False):
             velocity["x"] -= speed
-        if self.moving_directions["d"]:
+        if directions.get("d", False):
             velocity["x"] += speed
         
-        # 预测时间 = 单帧时间 + 部分网络延迟补偿
-        prediction_time = dt + min(time_since_update * 0.3, 0.1)  # 最多补偿100ms
-        
-        # 应用预测
-        predicted_pos["x"] += velocity["x"] * prediction_time
-        predicted_pos["y"] += velocity["y"] * prediction_time
-        
-        # 边界检查
-        predicted_pos["x"] = max(0, min(SCREEN_WIDTH, predicted_pos["x"]))
-        predicted_pos["y"] = max(0, min(SCREEN_HEIGHT, predicted_pos["y"]))
-        
-        return predicted_pos
+        return velocity
     
-    def _smooth_interpolate_optimized(self, dt: float):
-        """优化的平滑插值 - 减少颤动"""
-        # 计算到目标位置的距离
-        dx = self.interpolation_target["x"] - self.display_position["x"]
-        dy = self.interpolation_target["y"] - self.display_position["y"]
+    def _smooth_to_position(self, target_position: Dict[str, float], dt: float):
+        """平滑移动到目标位置"""
+        dx = target_position["x"] - self.display_position["x"]
+        dy = target_position["y"] - self.display_position["y"]
         distance = (dx * dx + dy * dy) ** 0.5
         
         if distance < 0.5:
-            # 距离很小，直接到达目标（减少微小抖动）
-            self.display_position = self.interpolation_target.copy()
+            # 距离很小，直接到达
+            self.display_position = target_position.copy()
         else:
-            # 动态插值速度：距离越大速度越快
-            base_speed = self.interpolation_speed
-            if distance > self.minor_correction_threshold:
-                # 大距离时提高速度
-                dynamic_speed = base_speed * (1.0 + distance / 50.0)
-            else:
-                # 小距离时降低速度（更平滑）
-                dynamic_speed = base_speed * 0.6
+            # 平滑插值
+            move_distance = self.interpolation_speed * distance * dt
+            if move_distance > distance:
+                move_distance = distance
             
-            # 应用阻尼系数
-            move_distance = dynamic_speed * distance * dt * self.correction_dampening
-            
-            # 限制最大移动距离（防止过度校正）
-            max_move = min(distance, 200.0 * dt)  # 每秒最多移动200像素
-            if move_distance > max_move:
-                move_distance = max_move
-            
-            # 移动方向单位向量
             if distance > 0:
                 move_x = (dx / distance) * move_distance
                 move_y = (dy / distance) * move_distance
@@ -248,14 +196,20 @@ class Player:
         
         self.last_update = time.time()
 
-    # 移除旧的复杂校正方法，替换为新的平滑系统
+    # 移除旧的复杂校正方法，替换为确定性方法
+    def update_from_server_authoritative(self, server_data: Dict[str, float], directions: Dict[str, bool] = None):
+        """兼容性方法 - 重定向到确定性方法"""
+        if directions:
+            self.update_from_key_event(directions, time.time(), server_data)
+    
     def update_from_server(self, position: Dict[str, float], directions: Dict[str, bool] = None):
-        """兼容性方法 - 重定向到新的平滑权威方法"""
-        self.update_from_server_authoritative(position, directions)
+        """兼容性方法 - 重定向到确定性方法"""
+        if directions:
+            self.update_from_key_event(directions, time.time(), position)
     
     def update_from_movement_event(self, position: Dict[str, float], directions: Dict[str, bool], timestamp: float):
-        """从移动事件更新位置 - 重定向到平滑权威方法"""
-        self.update_from_server_authoritative(position, directions)
+        """兼容性方法 - 重定向到确定性方法"""
+        self.update_from_key_event(directions, timestamp, position)
     
     def to_dict(self) -> Dict:
         """Convert to dictionary - for network transmission"""

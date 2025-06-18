@@ -59,6 +59,9 @@ class GameMessageType(str, Enum):
     PONG = "pong"
     ERROR = "error"
     DEBUG = "debug"
+    
+    # 新增：按键事件消息
+    KEY_STATE_CHANGE = "key_state_change"
 
 
 @dataclass
@@ -601,6 +604,29 @@ class DebugMessage(BaseGameMessage):
 
 
 # ===============================
+# Key event messages (新增)
+# ===============================
+
+@dataclass
+class KeyStateChangeMessage(BaseGameMessage):
+    """按键状态变化消息 - 用于确定性位置同步"""
+    player_id: str
+    key_states: Dict[str, bool]  # {"w": True, "a": False, "s": False, "d": False}
+    timestamp: Optional[float] = None
+    position: Optional[Dict[str, float]] = None  # 当前位置（用于校正）
+    
+    def __init__(self, player_id: str, key_states: Dict[str, bool], timestamp: float = None, position: Dict[str, float] = None):
+        self.player_id = player_id
+        self.key_states = key_states
+        self.timestamp = timestamp or time.time()
+        self.position = position or {"x": 0.0, "y": 0.0}
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.KEY_STATE_CHANGE
+
+
+# ===============================
 # Message factory and utility functions
 # ===============================
 
@@ -637,6 +663,7 @@ MESSAGE_TYPE_MAP = {
     GameMessageType.DEBUG: DebugMessage,
     GameMessageType.SLOT_CHANGE_REQUEST: SlotChangeRequestMessage,
     GameMessageType.SLOT_CHANGED: SlotChangedMessage,
+    GameMessageType.KEY_STATE_CHANGE: KeyStateChangeMessage,  # 添加新的消息类型映射
 }
 
 
@@ -693,5 +720,5 @@ GameMessage = Union[
     RoomLeaveMessage, RoomListMessage, RoomCreatedMessage,
     CreateRoomRequestMessage, RoomStartGameMessage,
     ConnectionAckMessage, PingMessage, PongMessage, ErrorMessage, DebugMessage,
-    SlotChangeRequestMessage, SlotChangedMessage
+    SlotChangeRequestMessage, SlotChangedMessage, KeyStateChangeMessage
 ] 
