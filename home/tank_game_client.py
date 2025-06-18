@@ -315,7 +315,9 @@ class GameClient:
         # Host client doesn't send join message here, waits for room creation success
     
     async def handle_game_state_update(self, message: GameStateUpdateMessage):
-        """Handle game state update - perfect sync"""
+        """Handle game state update - optimized sync with better prediction"""
+        current_time = time.time()
+        
         # Update player states
         for player_data in message.players:
             player_id = player_data['player_id']
@@ -328,15 +330,8 @@ class GameClient:
                     self.players[player_id].slot_index = player_data.get('slot_index', 0)
                     # 不更新本地玩家的位置或移动方向
                 else:
-                    # 远程玩家：更新所有属性，包括位置校正
-                    self.players[player_id].update_from_server(
-                        player_data['position'],
-                        player_data.get('moving_directions')
-                    )
-                    # 更新其他属性
-                    self.players[player_id].health = player_data.get('health', 100)
-                    self.players[player_id].is_alive = player_data.get('is_alive', True)
-                    self.players[player_id].slot_index = player_data.get('slot_index', 0)
+                    # 远程玩家：使用优化的更新策略
+                    self._update_remote_player(player_id, player_data, current_time)
             else:
                 # 新玩家
                 new_player = Player(player_data)
@@ -378,34 +373,62 @@ class GameClient:
             }
             self.update_room_display(room_data)
     
+    def _update_remote_player(self, player_id: str, player_data: Dict, current_time: float):
+        """优化的远程玩家更新"""
+        player = self.players[player_id]
+        
+        # 更新非位置属性
+        player.health = player_data.get('health', 100)
+        player.is_alive = player_data.get('is_alive', True)
+        player.slot_index = player_data.get('slot_index', 0)
+        
+        # 更新移动方向
+        new_directions = player_data.get('moving_directions', {"w": False, "a": False, "s": False, "d": False})
+        directions_changed = player.moving_directions != new_directions
+        
+        if directions_changed:
+            player.moving_directions = new_directions
+            # 方向变化时立即记录，这样可以立即开始预测
+            print(f"🎮 Remote player {player_id} direction changed: {[k for k, v in new_directions.items() if v]}")
+        
+        # 位置更新：只在接收到服务器位置更新时处理
+        server_position = player_data['position']
+        player.update_from_server(server_position, new_directions)
+    
     async def handle_player_move(self, message: PlayerMoveMessage):
-        """Handle other player movement"""
+        """Handle other player movement - immediate direction update"""
         if message.player_id != self.player_id and message.player_id in self.players:
-            # Always update movement directions for immediate response
-            self.players[message.player_id].moving_directions = message.direction
+            player = self.players[message.player_id]
             
-            # Use server position as a reference for correction, but allow smooth movement
-            if message.position:
-                self.players[message.player_id].update_from_server(message.position, message.direction)
+            # 立即更新移动方向以获得响应性
+            old_directions = player.moving_directions.copy()
+            player.moving_directions = message.direction
             
-            # 为了调试，记录远程玩家的移动
-            if any(message.direction.values()):
+            # 检查方向是否真的改变了
+            if old_directions != message.direction:
                 moving_keys = [k for k, v in message.direction.items() if v]
-                print(f"🎮 Remote player {message.player_id} moving: {moving_keys}")
+                print(f"🎮 Remote player {message.player_id} movement: {moving_keys}")
+            
+            # 位置信息用于校正（如果提供的话）
+            if message.position:
+                player.update_from_server(message.position, message.direction)
     
     async def handle_player_stop(self, message: PlayerStopMessage):
-        """Handle other player stop"""
+        """Handle other player stop - immediate stop"""
         if message.player_id != self.player_id and message.player_id in self.players:
-            # Use server position for final stop position
-            if message.position:
-                self.players[message.player_id].update_from_server(message.position)
+            player = self.players[message.player_id]
             
-            # Immediately stop movement
-            self.players[message.player_id].moving_directions = {
+            # 立即停止移动
+            player.moving_directions = {
                 "w": False, "a": False, "s": False, "d": False
             }
             
-            print(f"🛑 Remote player {message.player_id} stopped")
+            # 使用最终停止位置
+            if message.position:
+                player.update_from_server(message.position)
+                print(f"🛑 Remote player {message.player_id} stopped at ({message.position['x']:.1f}, {message.position['y']:.1f})")
+            else:
+                print(f"🛑 Remote player {message.player_id} stopped")
     
     async def handle_bullet_fired(self, message: BulletFiredMessage):
         """Handle bullet fired"""
@@ -735,24 +758,24 @@ class GameClient:
         self.input_state['mouse_clicked'] = False
     
     def update_game_objects(self, dt: float):
-        """Update game objects - 为远程玩家使用与本地玩家相同的移动算法"""
-        # Use the same movement algorithm for remote players as local players
-        # This ensures smooth movement while maintaining consistency
+        """Update game objects - 优化的远程玩家预测"""
+        # 使用相同的移动算法更新远程玩家
+        # 这确保了基于方向状态的平滑移动和一致性
         
-        # Update remote players using the same movement algorithm as local player
+        # 更新远程玩家，使用与本地玩家相同的移动算法
         for player_id, player in self.players.items():
-            if player_id != self.player_id:  # Only update remote players
-                # Use the same position update algorithm as local player
-                # This provides smooth movement based on direction states from server
+            if player_id != self.player_id:  # 只更新远程玩家
+                # 使用与本地玩家相同的位置更新算法
+                # 这基于从服务器接收的方向状态提供平滑移动
                 player.update_position(dt)
         
-        # Update bullet positions
+        # 更新子弹位置
         bullets_to_remove = []
         for bullet_id, bullet in self.bullets.items():
             if not bullet.update(dt):
                 bullets_to_remove.append(bullet_id)
         
-        # Remove invalid bullets
+        # 移除无效子弹
         for bullet_id in bullets_to_remove:
             del self.bullets[bullet_id]
     
@@ -918,12 +941,15 @@ class GameClient:
         self.screen.blit(stats_surface, (10, y_offset))
         y_offset += 25
         
+        # Position sync debug info
+        self._render_position_sync_debug(y_offset)
+        
         # Position info (debug)
         if self.player_id and self.player_id in self.players:
             pos = self.players[self.player_id].position
             pos_text = f"Position: ({pos['x']:.1f}, {pos['y']:.1f})"
             pos_surface = self.small_font.render(pos_text, True, COLORS['GRAY'])
-            self.screen.blit(pos_surface, (10, y_offset))
+            self.screen.blit(pos_surface, (10, y_offset + 60))
         
         # Control instructions
         controls = [
@@ -936,6 +962,63 @@ class GameClient:
             control_surface = self.small_font.render(control, True, COLORS['GRAY'])
             self.screen.blit(control_surface, (SCREEN_WIDTH - 150, 10 + i * 20))
     
+    def _render_position_sync_debug(self, y_offset: int):
+        """渲染位置同步调试信息"""
+        if not self.players:
+            return
+        
+        # 统计远程玩家的同步状态
+        remote_players = [p for pid, p in self.players.items() if pid != self.player_id]
+        
+        if remote_players:
+            # 计算同步统计
+            total_corrections = 0
+            moving_players = 0
+            
+            for player in remote_players:
+                if hasattr(player, 'correction_history'):
+                    # 统计最近1秒内的校正次数
+                    current_time = time.time()
+                    recent_corrections = [c for c in player.correction_history if current_time - c < 1.0]
+                    total_corrections += len(recent_corrections)
+                
+                if any(player.moving_directions.values()):
+                    moving_players += 1
+            
+            # 显示同步状态
+            sync_color = COLORS['GREEN'] if total_corrections <= 3 else COLORS['ORANGE'] if total_corrections <= 6 else COLORS['RED']
+            sync_text = f"Position Sync: {total_corrections} corrections/sec"
+            sync_surface = self.small_font.render(sync_text, True, sync_color)
+            self.screen.blit(sync_surface, (10, y_offset))
+            
+            # 显示移动玩家数量
+            move_text = f"Moving players: {moving_players}/{len(remote_players)}"
+            move_surface = self.small_font.render(move_text, True, COLORS['CYAN'])
+            self.screen.blit(move_surface, (10, y_offset + 15))
+            
+            # 为每个远程玩家显示详细的同步信息
+            if len(remote_players) <= 3:  # 只在玩家数量较少时显示详细信息
+                detail_y = y_offset + 30
+                for i, player in enumerate(remote_players):
+                    if hasattr(player, 'correction_history'):
+                        current_time = time.time()
+                        recent_corrections = len([c for c in player.correction_history if current_time - c < 1.0])
+                        
+                        # 计算与目标位置的距离
+                        if hasattr(player, 'target_position'):
+                            dx = player.target_position["x"] - player.position["x"]
+                            dy = player.target_position["y"] - player.position["y"]
+                            distance = (dx * dx + dy * dy) ** 0.5
+                            
+                            detail_text = f"{player.name}: {recent_corrections} corr, {distance:.1f}px drift"
+                        else:
+                            detail_text = f"{player.name}: {recent_corrections} corrections"
+                        
+                        detail_color = COLORS['WHITE'] if recent_corrections <= 1 else COLORS['YELLOW']
+                        detail_surface = self.small_font.render(detail_text, True, detail_color)
+                        self.screen.blit(detail_surface, (10, detail_y))
+                        detail_y += 12
+
     def render_game_world(self):
         """Render game world (tanks, bullets, etc.)"""
         # Render players

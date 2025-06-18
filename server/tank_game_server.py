@@ -817,20 +817,42 @@ class TankGameServer:
                     if events:
                         await self.broadcast_events(room.room_id, events)
                     
-                    # 提高位置同步频率 - 每秒同步3次而不是每5秒1次
-                    # 这样确保远程玩家位置在所有客户端上保持一致
-                    if room.frame_id % 20 == 0:  # 每20帧同步一次 (每秒3次)
+                    # 优化位置同步策略 - 智能同步而不是定时同步
+                    should_sync = self._should_sync_positions(room)
+                    
+                    if should_sync:
                         state_update = room.get_state_if_changed()
                         if state_update:
                             await self.broadcast_to_room(room.room_id, state_update)
+                            
                             # 减少日志输出，只在重要同步时输出
-                            if room.frame_id % 60 == 0:  # 每秒输出一次日志
-                                print(f"🔄 Position sync for room {room.room_id} (frame {room.frame_id})")
+                            if room.frame_id % 180 == 0:  # 每3秒输出一次日志
+                                moving_players = sum(1 for p in room.players.values() if any(p.moving_directions.values()))
+                                print(f"🔄 Position sync for room {room.room_id} - {moving_players}/{len(room.players)} players moving")
             
             # Control frame rate
             loop_time = time.time() - loop_start
             sleep_time = max(0, dt - loop_time)
             await asyncio.sleep(sleep_time)
+    
+    def _should_sync_positions(self, room) -> bool:
+        """智能决定是否需要同步位置"""
+        # 游戏未开始时，低频同步
+        if room.room_state != "playing":
+            return room.frame_id % 180 == 0  # 每3秒同步一次
+        
+        # 游戏进行中，根据玩家活动决定同步频率
+        current_time = time.time()
+        
+        # 检查是否有玩家在移动
+        moving_players = [p for p in room.players.values() if any(p.moving_directions.values())]
+        
+        if moving_players:
+            # 有玩家移动时，每15帧同步一次（每秒4次）
+            return room.frame_id % 15 == 0
+        else:
+            # 没有玩家移动时，每60帧同步一次（每秒1次）
+            return room.frame_id % 60 == 0
 
 
 async def main():
