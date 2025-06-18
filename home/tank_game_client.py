@@ -60,12 +60,11 @@ DEFAULT_FONT_PATH = os.getenv('DEFAULT_FONT_PATH', None)
 
 # 服务器连接配置 - 使用真实IP地址
 DEFAULT_LOCAL_IP = get_local_ip()
-SERVER_HOST = os.getenv('SERVER_HOST', DEFAULT_LOCAL_IP)  # 使用真实IP而不是localhost
 SERVER_PORT = int(os.getenv('SERVER_PORT', 8765))
-DEFAULT_SERVER_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}"
+DEFAULT_SERVER_URL = f"ws://{DEFAULT_LOCAL_IP}:{SERVER_PORT}"
+
 
 print(f"🌐 Auto-detected local IP: {DEFAULT_LOCAL_IP}")
-print(f"🎯 Default server URL: {DEFAULT_SERVER_URL}")
 
 # 颜色定义
 COLORS = {
@@ -80,7 +79,7 @@ COLORS = {
     'ORANGE': (255, 165, 0),
 }
 
-class PerfectPlayerState:
+class PlayerState:
     """完美玩家状态类 - 单一位置源"""
     
     def __init__(self, player_data: Dict):
@@ -154,7 +153,7 @@ class PerfectPlayerState:
         
         self.last_update = time.time()
 
-class PerfectBulletState:
+class BulletState:
     """完美子弹状态类"""
     
     def __init__(self, bullet_data: Dict):
@@ -179,7 +178,7 @@ class PerfectBulletState:
         
         return True
 
-class PerfectGameClient:
+class GameClient:
     """完美游戏客户端"""
     
     def __init__(self, server_url: str = DEFAULT_SERVER_URL):
@@ -193,8 +192,8 @@ class PerfectGameClient:
         self.player_name = f"PerfectPlayer_{int(time.time()) % 10000}"
         
         # 游戏状态
-        self.players: Dict[str, PerfectPlayerState] = {}
-        self.bullets: Dict[str, PerfectBulletState] = {}
+        self.players: Dict[str, PlayerState] = {}
+        self.bullets: Dict[str, BulletState] = {}
         
         # 输入状态 - 简化的按键状态机
         self.input_state = {
@@ -249,7 +248,7 @@ class PerfectGameClient:
             self.big_font = pygame.font.Font(None, 32)
             print(f"⚠️ Error loading font: {e}, using default font")
         
-        print(f"✨ PerfectGameClient initialized for {server_url}")
+        print(f"✨ GameClient initialized for {server_url}")
     
     async def connect(self):
         """连接到服务器"""
@@ -353,7 +352,7 @@ class PerfectGameClient:
                 self.players[player_id].is_alive = player_data.get('is_alive', True)
             else:
                 # 新玩家
-                new_player = PerfectPlayerState(player_data)
+                new_player = PlayerState(player_data)
                 self.players[player_id] = new_player
                 
                 if player_id == self.player_id:
@@ -365,7 +364,7 @@ class PerfectGameClient:
         # 添加新子弹
         for bullet_id, bullet_data in server_bullets.items():
             if bullet_id not in self.bullets:
-                self.bullets[bullet_id] = PerfectBulletState(bullet_data)
+                self.bullets[bullet_id] = BulletState(bullet_data)
         
         # 移除服务器上不存在的子弹
         bullets_to_remove = []
@@ -401,7 +400,7 @@ class PerfectGameClient:
             'damage': message.damage,
             'created_time': time.time()
         }
-        self.bullets[message.bullet_id] = PerfectBulletState(bullet_data)
+        self.bullets[message.bullet_id] = BulletState(bullet_data)
     
     async def handle_collision(self, message: CollisionMessage):
         """处理碰撞事件"""
@@ -749,7 +748,7 @@ class PerfectGameClient:
             self.screen.blit(control_surface, (SCREEN_WIDTH - 150, 10 + i * 20))
 
 
-async def perfect_game_loop(client: PerfectGameClient):
+async def game_loop(client: GameClient):
     """完美游戏主循环"""
     last_ping_time = 0
     ping_interval = 2.0
@@ -809,8 +808,8 @@ async def perfect_game_loop(client: PerfectGameClient):
     pygame.quit()
 
 
-async def main():
-    """主函数"""
+def determine_server_url():
+    """确定服务器URL - 解析命令行参数并智能选择服务器"""
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='Perfect Tank Game Client')
     parser.add_argument('--server', '-s', type=str, 
@@ -826,7 +825,7 @@ async def main():
     # 如果用户要求扫描网络
     if args.scan:
         display_connection_help()
-        return
+        return None  # 表示程序应该退出
     
     # 确定服务器URL
     if args.server:
@@ -856,15 +855,19 @@ async def main():
             print(f"⚠️ No servers found, trying local server: {DEFAULT_LOCAL_IP}")
             print("💡 If this fails, make sure server is running or use --host [SERVER_IP]")
     
+    return server_url
+
+
+async def main():
+    """主函数"""
+    # 确定服务器URL
+    server_url = determine_server_url()
+    if server_url is None:
+        return  # 用户选择了扫描，程序退出
+    
     print("✨ Starting Perfect Tank Game Client...")
     print("=" * 50)
-    print("🎯 Perfect Features:")
-    print("  • Zero position jitter")
-    print("  • Consistent client-server prediction")
-    print("  • Perfect bullet-player position sync")
-    print("  • Minimal server corrections")
-    print("  • Smooth 60 FPS rendering")
-    print("  • Event-driven input handling")
+
     print(f"  • Fixed window size ({SCREEN_WIDTH}x{SCREEN_HEIGHT})")
     print("=" * 50)
     print(f"🌐 Target server: {server_url}")
@@ -876,15 +879,15 @@ async def main():
     print("💡 Tip: Use --scan to find servers on local network")
     print("=" * 50)
     
-    client = PerfectGameClient(server_url)
-    
+
+    client = GameClient(server_url)
     try:
         # 连接到服务器
         await client.connect()
         
         if client.connected:
             # 启动完美游戏循环
-            await perfect_game_loop(client)
+            await game_loop(client)
         else:
             print("❌ Failed to connect to server")
             print("=" * 50)
