@@ -15,6 +15,8 @@ import websockets
 from websockets.server import WebSocketServerProtocol
 from dataclasses import asdict
 from dotenv import load_dotenv
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import threading
 
 # 添加共享目录到 Python 路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'shared'))
@@ -27,11 +29,13 @@ from tank_game_messages import (
     PlayerHitMessage, PlayerDestroyedMessage, ConnectionAckMessage,
     PingMessage, PongMessage, ErrorMessage, DebugMessage,
     create_error_message, create_debug_message,
-    BulletDestroyedMessage, CollisionMessage, PlayerDeathMessage
+    BulletDestroyedMessage, CollisionMessage, PlayerDeathMessage,
+    SlotChangeRequestMessage, SlotChangedMessage, RoomStartGameMessage,
+    CreateRoomRequestMessage, RoomCreatedMessage
 )
 
 # 导入共享的实体类
-from tank_game_entities import Player, Bullet
+from tank_game_entities import Player, Bullet, GameRoom
 
 # 加载环境变量 - 使用项目根目录的共享 .env 文件
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -112,6 +116,7 @@ def display_server_info(host: str, port: int):
         print(f"🖥️  Server Host: {host} (listening on all interfaces)")
         print(f"🌐 Local IP: {local_ip}")
         print(f"🔌 Port: {port}")
+        print(f"📊 Status Port: {port + 1}")  # HTTP状态端口
         print()
         print("💻 Client Commands:")
         print(f"   • Local: python home/tank_game_client.py")
@@ -126,229 +131,104 @@ def display_server_info(host: str, port: int):
     print("🔥 Ready for battle! Waiting for players...")
     print("=" * 60)
 
-class GameRoom:
-    """游戏房间"""
+class StatusHandler(SimpleHTTPRequestHandler):
+    """简单的HTTP状态处理器"""
     
-    def __init__(self, room_id: str, name: str, max_players: int = None):
-        self.room_id = room_id
-        self.name = name
-        self.max_players = max_players if max_players is not None else MAX_PLAYERS_PER_ROOM
-        self.players: Dict[str, Player] = {}
-        self.bullets: Dict[str, Bullet] = {}
-        self.game_time = 0.0
-        self.frame_id = 0
-        self.last_update = time.time()
-        # 事件驱动相关
-        self.pending_events: List[GameMessage] = []
-        self.state_changed = False
-        
-    def add_player(self, player: Player) -> bool:
-        """添加玩家到房间"""
-        if len(self.players) >= self.max_players:
-            return False
-        
-        self.players[player.player_id] = player
-        self.state_changed = True
-        return True
-        
-    def remove_player(self, player_id: str) -> bool:
-        """从房间移除玩家"""
-        if player_id in self.players:
-            del self.players[player_id]
-            self.state_changed = True
-            return True
-        return False
-        
-    def add_bullet(self, bullet: Bullet):
-        """添加子弹"""
-        self.bullets[bullet.bullet_id] = bullet
-        self.state_changed = True
-        
-    def update_physics(self, dt: float) -> List[GameMessage]:
-        """更新游戏物理，返回需要广播的事件消息"""
-        self.game_time += dt
-        self.frame_id += 1
-        events = []
-        
-        # 更新玩家位置 - 修复：不覆盖客户端位置
-        for player in self.players.values():
-            if player.is_alive:
-                # 检查是否有最近的客户端更新
-                time_since_client_update = time.time() - player.last_client_update
-                
-                # 如果客户端更新太久（超过100ms），服务器接管位置计算
-                if time_since_client_update > 0.1 and player.use_client_position:
-                    print(f"⚠️ No recent client update for {player.name}, server taking over")
-                    player.use_client_position = False
-                
-                # 只有在服务器接管时才更新位置
-                if not player.use_client_position:
-                    # 根据移动方向更新速度
-                    speed = TANK_SPEED  # 使用环境变量
-                    old_position = player.position.copy()
-                    player.velocity = {"x": 0.0, "y": 0.0}
-                    
-                    if player.moving_directions["w"]:
-                        player.velocity["y"] -= speed
-                    if player.moving_directions["s"]:
-                        player.velocity["y"] += speed
-                    if player.moving_directions["a"]:
-                        player.velocity["x"] -= speed
-                    if player.moving_directions["d"]:
-                        player.velocity["x"] += speed
-                    
-                    # 更新位置
-                    player.position["x"] += player.velocity["x"] * dt
-                    player.position["y"] += player.velocity["y"] * dt
-                    
-                    # 边界检查
-                    player.position["x"] = max(0, min(SCREEN_WIDTH, player.position["x"]))
-                    player.position["y"] = max(0, min(SCREEN_HEIGHT, player.position["y"]))
-                    
-                    # 检查位置是否发生变化
-                    if (abs(old_position["x"] - player.position["x"]) > 1.0 or 
-                        abs(old_position["y"] - player.position["y"]) > 1.0):
-                        self.state_changed = True
-        
-        # 更新子弹
-        bullets_to_remove = []
-        for bullet_id, bullet in self.bullets.items():
-            if not bullet.update(dt):
-                bullets_to_remove.append(bullet_id)
-        
-        # 移除无效子弹并广播销毁事件
-        for bullet_id in bullets_to_remove:
-            if bullet_id in self.bullets:
-                bullet = self.bullets[bullet_id]
-                # 创建子弹销毁事件
-                destroy_event = BulletDestroyedMessage(
-                    bullet_id=bullet_id,
-                    reason="expired" if time.time() - bullet.created_time > bullet.max_lifetime else "boundary"
-                )
-                events.append(destroy_event)
-                del self.bullets[bullet_id]
-                self.state_changed = True
-        
-        # 碰撞检测
-        collision_events = self.check_collisions()
-        events.extend(collision_events)
-        
-        return events
+    def __init__(self, server_instance, *args, **kwargs):
+        self.server_instance = server_instance
+        super().__init__(*args, **kwargs)
     
-    def check_collisions(self) -> List[GameMessage]:
-        """检查碰撞，返回碰撞事件"""
-        events = []
-        bullets_to_remove = []
-        
-        for bullet_id, bullet in self.bullets.items():
-            for player_id, player in self.players.items():
-                if (player.is_alive and 
-                    player_id != bullet.owner_id and
-                    self.is_collision(bullet.position, player.position, 20)):
-                    
-                    # 记录碰撞前的血量
-                    old_health = player.health
-                    
-                    # 处理碰撞
-                    player.health -= bullet.damage
-                    bullets_to_remove.append(bullet_id)
-                    
-                    # 创建碰撞事件
-                    collision_event = CollisionMessage(
-                        bullet_id=bullet_id,
-                        target_player_id=player_id,
-                        damage_dealt=bullet.damage,
-                        new_health=player.health,
-                        collision_position=bullet.position.copy()
-                    )
-                    events.append(collision_event)
-                    
-                    # 创建子弹销毁事件
-                    destroy_event = BulletDestroyedMessage(
-                        bullet_id=bullet_id,
-                        reason="collision"
-                    )
-                    events.append(destroy_event)
-                    
-                    # 检查玩家是否死亡
-                    if player.health <= 0:
-                        player.is_alive = False
-                        player.health = 0
-                        
-                        # 创建玩家死亡事件
-                        death_event = PlayerDeathMessage(
-                            player_id=player_id,
-                            killer_id=bullet.owner_id,
-                            death_position=player.position.copy()
-                        )
-                        events.append(death_event)
-                    
-                    self.state_changed = True
-                    break
-        
-        # 移除碰撞的子弹
-        for bullet_id in bullets_to_remove:
-            if bullet_id in self.bullets:
-                del self.bullets[bullet_id]
-        
-        return events
+    def do_GET(self):
+        """处理GET请求"""
+        if self.path == '/status':
+            # 返回服务器状态JSON - 只计算可加入的房间
+            total_players = len(self.server_instance.players)
+            
+            # 只计算等待状态且有玩家的房间（可加入的房间）
+            joinable_rooms = [
+                r for r in self.server_instance.rooms.values() 
+                if len(r.players) > 0 and r.room_state == "waiting"
+            ]
+            joinable_players = sum(len(r.players) for r in joinable_rooms)
+            
+            status = {
+                'players': joinable_players,  # 只返回可加入房间的玩家数
+                'max_players': MAX_PLAYERS_PER_ROOM * len(self.server_instance.rooms),
+                'rooms': len(joinable_rooms),  # 只返回可加入的房间数
+                'server_version': '1.0.0',
+                'status': 'online'
+            }
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')  # 允许跨域
+            self.end_headers()
+            self.wfile.write(json.dumps(status).encode())
+            
+            # 详细调试信息
+            print(f"📊 Status query: {len(joinable_rooms)} joinable rooms, {joinable_players} joinable players")
+            print(f"📊 Total rooms: {len(self.server_instance.rooms)}, Total players: {total_players}")
+            for room_id, room in self.server_instance.rooms.items():
+                print(f"📊   Room {room_id}: {len(room.players)} players, state={room.room_state}, host={room.host_player_id}")
+        else:
+            self.send_response(404)
+            self.end_headers()
     
-    def is_collision(self, pos1: Dict[str, float], pos2: Dict[str, float], radius: float) -> bool:
-        """检查两个位置是否碰撞"""
-        dx = pos1["x"] - pos2["x"]
-        dy = pos1["y"] - pos2["y"]
-        distance = (dx * dx + dy * dy) ** 0.5
-        return distance < radius
-    
-    def get_state_if_changed(self) -> Optional[GameStateUpdateMessage]:
-        """如果状态发生变化，返回状态更新消息"""
-        if self.state_changed:
-            self.state_changed = False
-            return GameStateUpdateMessage(
-                players=[p.to_dict() for p in self.players.values()],
-                bullets=[b.to_dict() for b in self.bullets.values()],
-                game_time=self.game_time,
-                frame_id=self.frame_id
-            )
-        return None
-    
-    def to_dict(self) -> Dict:
-        """转换为字典"""
-        return {
-            "room_id": self.room_id,
-            "name": self.name,
-            "max_players": self.max_players,
-            "current_players": len(self.players),
-            "players": [player.to_dict() for player in self.players.values()],
-            "bullets": [bullet.to_dict() for bullet in self.bullets.values()],
-            "game_time": self.game_time,
-            "frame_id": self.frame_id
-        }
-
+    def log_message(self, format, *args):
+        """禁用HTTP日志输出"""
+        pass
 
 class TankGameServer:
     """坦克游戏服务器"""
     def __init__(self, host: str = None, port: int = None):
         self.host = host if host is not None else SERVER_HOST
         self.port = port if port is not None else SERVER_PORT
+        self.status_port = self.port + 1  # HTTP状态端口
         self.clients: Dict[WebSocketServerProtocol, str] = {}  # websocket -> client_id
         self.players: Dict[str, Player] = {}  # player_id -> Player
         self.rooms: Dict[str, GameRoom] = {}  # room_id -> GameRoom
         self.default_room_id = "default"
         self.running = False
         self.game_loop_task: Optional[asyncio.Task] = None
+        self.http_server = None
+        self.http_thread = None
         
         # 创建默认房间
         self.rooms[self.default_room_id] = GameRoom(
-            self.default_room_id, "Default Room"
+            self.default_room_id, "Default Room", "server"
         )
         
         print(f"🎮 TankGameServer initialized on {self.host}:{self.port}")
         print(f"🎯 Game config: {SCREEN_WIDTH}x{SCREEN_HEIGHT}, Speed: {TANK_SPEED}")
     
+    def start_status_server(self):
+        """启动HTTP状态服务器"""
+        def create_handler(*args, **kwargs):
+            return StatusHandler(self, *args, **kwargs)
+        
+        try:
+            bind_host = '' if self.host == '0.0.0.0' else self.host
+            self.http_server = HTTPServer((bind_host, self.status_port), create_handler)
+            self.http_thread = threading.Thread(target=self.http_server.serve_forever, daemon=True)
+            self.http_thread.start()
+            print(f"📊 Status server started on port {self.status_port}")
+        except Exception as e:
+            print(f"⚠️ Failed to start status server: {e}")
+    
+    def stop_status_server(self):
+        """停止HTTP状态服务器"""
+        if self.http_server:
+            self.http_server.shutdown()
+            self.http_server.server_close()
+        if self.http_thread:
+            self.http_thread.join(timeout=1.0)
+    
     async def start(self):
         """启动服务器"""
         self.running = True
+        
+        # 启动HTTP状态服务器
+        self.start_status_server()
         
         # 启动游戏循环
         self.game_loop_task = asyncio.create_task(self.game_loop())
@@ -362,6 +242,7 @@ class TankGameServer:
         self.running = False
         if self.game_loop_task:
             self.game_loop_task.cancel()
+        self.stop_status_server()
         print("🛑 Server stopped")
     
     async def handle_client(self, websocket: WebSocketServerProtocol):
@@ -392,28 +273,63 @@ class TankGameServer:
     
     async def disconnect_client(self, websocket: WebSocketServerProtocol, client_id: str):
         """断开客户端连接"""
+        print(f"🔌 Disconnecting client {client_id}...")
+        
         # 移除玩家
         if client_id in self.players:
             player = self.players[client_id]
+            player_name = player.name
             
-            # 从房间中移除
-            for room in self.rooms.values():
-                room.remove_player(client_id)
+            # 找到玩家所在的房间并移除
+            rooms_to_delete = []
+            for room_id, room in self.rooms.items():
+                if client_id in room.players:
+                    print(f"📤 Removing player {player_name} from room {room_id}")
+                    result = room.remove_player(client_id)
+                    
+                    # 广播玩家离开消息给房间内其他玩家
+                    if len(room.players) > 0:
+                        leave_message = PlayerLeaveMessage(
+                            player_id=client_id,
+                            reason="disconnected"
+                        )
+                        await self.broadcast_to_room(room_id, leave_message, exclude=client_id)
+                    
+                    if result == "delete_room":
+                        # 房间空了，标记为删除
+                        rooms_to_delete.append(room_id)
+                        print(f"🗑️ Room {room_id} is empty, marking for deletion")
             
-            # 广播玩家离开消息
-            leave_message = PlayerLeaveMessage(
-                player_id=client_id,
-                reason="disconnected"
-            )
-            await self.broadcast_to_room(self.default_room_id, leave_message, exclude=client_id)
+            # 删除空房间（除了默认房间）
+            for room_id in rooms_to_delete:
+                if room_id != self.default_room_id:  # 保留默认房间
+                    del self.rooms[room_id]
+                    print(f"🗑️ Deleted empty room: {room_id}")
+                else:
+                    # 默认房间不删除，但重置房主为服务器
+                    self.rooms[room_id].host_player_id = "server"
+                    print(f"🔄 Default room reset, host is now server")
             
+            # 从玩家字典中移除
             del self.players[client_id]
+            print(f"✅ Player {player_name} ({client_id}) completely removed")
         
         # 移除客户端
         if websocket in self.clients:
             del self.clients[websocket]
         
         print(f"🚪 Client {client_id} fully disconnected")
+        
+        # 详细的房间状态调试信息
+        active_rooms = [r for r in self.rooms.values() if len(r.players) > 0]
+        waiting_rooms = [r for r in self.rooms.values() if len(r.players) > 0 and r.room_state == "waiting"]
+        print(f"📊 After disconnect - Active rooms: {len(active_rooms)}, Waiting rooms: {len(waiting_rooms)}, Total players: {len(self.players)}")
+        
+        # 详细显示每个房间的状态
+        for room_id, room in self.rooms.items():
+            if len(room.players) > 0 or room_id == self.default_room_id:
+                player_names = [p.name for p in room.players.values()]
+                print(f"📊   Room {room_id}: {len(room.players)} players {player_names}, state={room.room_state}, host={room.host_player_id}")
     
     async def handle_message(self, websocket: WebSocketServerProtocol, client_id: str, raw_message: str):
         """处理客户端消息"""
@@ -440,10 +356,14 @@ class TankGameServer:
         """路由消息到对应的处理器"""
         handlers = {
             GameMessageType.PLAYER_JOIN: self.handle_player_join,
+            GameMessageType.PLAYER_LEAVE: self.handle_player_leave,
             GameMessageType.PLAYER_MOVE: self.handle_player_move,
             GameMessageType.PLAYER_STOP: self.handle_player_stop,
             GameMessageType.PLAYER_SHOOT: self.handle_player_shoot,
             GameMessageType.PING: self.handle_ping,
+            GameMessageType.CREATE_ROOM_REQUEST: self.handle_create_room_request,
+            GameMessageType.SLOT_CHANGE_REQUEST: self.handle_slot_change_request,
+            GameMessageType.ROOM_START_GAME: self.handle_room_start_game,
         }
         
         handler = handlers.get(message.type)
@@ -462,15 +382,22 @@ class TankGameServer:
         player = Player(player_data, websocket)
         self.players[client_id] = player
         
-        # 加入默认房间
-        room = self.rooms[self.default_room_id]
+        # 确定要加入的房间ID
+        target_room_id = message.room_id if message.room_id else self.default_room_id
+        
+        # 确保目标房间存在
+        if target_room_id not in self.rooms:
+            print(f"⚠️ Room {target_room_id} not found, using default room")
+            target_room_id = self.default_room_id
+        
+        room = self.rooms[target_room_id]
         if room.add_player(player):
-            print(f"👤 Player {message.player_name} ({client_id}) joined")
+            print(f"👤 Player {message.player_name} ({client_id}) joined room {target_room_id} slot {player.slot_index}")
             
             # 广播玩家加入消息给房间内其他玩家
-            await self.broadcast_to_room(self.default_room_id, message, exclude=client_id)
+            await self.broadcast_to_room(target_room_id, message, exclude=client_id)
             
-            # 发送当前游戏状态给新玩家
+            # 发送当前游戏状态给新玩家（包含所有玩家的槽位信息）
             state_message = GameStateUpdateMessage(
                 players=[p.to_dict() for p in room.players.values()],
                 bullets=[b.to_dict() for b in room.bullets.values()],
@@ -478,9 +405,24 @@ class TankGameServer:
                 frame_id=room.frame_id
             )
             await self.send_message(websocket, state_message)
+            
+            # 广播房间更新给所有玩家
+            room_update_message = GameStateUpdateMessage(
+                players=[p.to_dict() for p in room.players.values()],
+                bullets=[],  # 房间大厅不需要子弹信息
+                game_time=room.game_time,
+                frame_id=room.frame_id
+            )
+            await self.broadcast_to_room(target_room_id, room_update_message)
         else:
-            error_msg = create_error_message("ROOM_FULL", "Room is full")
+            error_msg = create_error_message("ROOM_FULL", f"Room {target_room_id} is full")
             await self.send_message(websocket, error_msg)
+    
+    async def handle_player_leave(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerLeaveMessage):
+        """处理玩家主动离开消息"""
+        print(f"👋 Player {client_id} is leaving (reason: {message.reason})")
+        # 触发断开连接处理逻辑
+        await self.disconnect_client(websocket, client_id)
     
     async def handle_player_move(self, websocket: WebSocketServerProtocol, client_id: str, message: PlayerMoveMessage):
         """处理玩家移动 - 修复：信任客户端位置"""
@@ -525,7 +467,17 @@ class TankGameServer:
         """处理玩家射击"""
         if client_id in self.players:
             player = self.players[client_id]
-            room = self.rooms[self.default_room_id]
+            
+            # 找到玩家所在的房间
+            player_room = None
+            for room in self.rooms.values():
+                if client_id in room.players:
+                    player_room = room
+                    break
+            
+            if not player_room:
+                print(f"⚠️ Player {client_id} not found in any room")
+                return
             
             # 创建子弹 - 使用共享实体类的新接口
             bullet_data = {
@@ -536,7 +488,7 @@ class TankGameServer:
                 'damage': 25
             }
             bullet = Bullet(bullet_data)
-            room.add_bullet(bullet)
+            player_room.add_bullet(bullet)
             
             # 立即广播子弹发射消息（事件驱动）
             bullet_message = BulletFiredMessage(
@@ -546,8 +498,10 @@ class TankGameServer:
                 velocity=bullet.velocity,
                 damage=bullet.damage
             )
-            await self.broadcast_to_room(self.default_room_id, bullet_message)
-            print(f"💥 Player {client_id} shoot event broadcasted")
+            await self.broadcast_to_room(player_room.room_id, bullet_message)
+            print(f"💥 Player {client_id} fired bullet in room {player_room.room_id}")
+        else:
+            print(f"⚠️ Player {client_id} not found for shooting")
     
     async def handle_ping(self, websocket: WebSocketServerProtocol, client_id: str, message: PingMessage):
         """处理 Ping"""
@@ -557,6 +511,103 @@ class TankGameServer:
             server_timestamp=time.time()
         )
         await self.send_message(websocket, pong_message)
+    
+    async def handle_create_room_request(self, websocket: WebSocketServerProtocol, client_id: str, message: CreateRoomRequestMessage):
+        """处理创建房间请求"""
+        # 生成唯一房间ID
+        room_id = f"room_{int(time.time())}_{str(uuid.uuid4())[:8]}"
+        
+        # 创建新房间
+        new_room = GameRoom(
+            room_id=room_id,
+            name=message.room_name,
+            host_player_id=client_id,
+            max_players=message.max_players
+        )
+        
+        # 添加到房间字典
+        self.rooms[room_id] = new_room
+        
+        print(f"🏠 Created room {room_id} '{message.room_name}' for host {client_id}")
+        
+        # 发送房间创建成功消息
+        room_created_message = RoomCreatedMessage(
+            room_id=room_id,
+            room_name=message.room_name,
+            creator_id=client_id,
+            max_players=message.max_players,
+            game_mode=message.game_mode
+        )
+        await self.send_message(websocket, room_created_message)
+        
+        print(f"📤 Sent room creation confirmation to {client_id}")
+        
+        # 注意：不在这里移动玩家，等待客户端发送 PlayerJoinMessage
+    
+    async def handle_slot_change_request(self, websocket: WebSocketServerProtocol, client_id: str, message: SlotChangeRequestMessage):
+        """处理槽位切换请求"""
+        if client_id not in self.players:
+            error_msg = create_error_message("PLAYER_NOT_FOUND", "Player not found")
+            await self.send_message(websocket, error_msg)
+            return
+        
+        room = self.rooms.get(message.room_id, self.rooms[self.default_room_id])
+        player = self.players[client_id]
+        
+        # 尝试切换槽位
+        old_slot = player.slot_index
+        if room.change_player_slot(client_id, message.target_slot):
+            # 槽位切换成功
+            slot_changed_message = SlotChangedMessage(
+                player_id=client_id,
+                old_slot=old_slot,
+                new_slot=message.target_slot,
+                room_id=message.room_id
+            )
+            
+            # 广播槽位变更消息
+            await self.broadcast_to_room(message.room_id, slot_changed_message)
+            
+            # 发送更新的房间状态
+            room_update_message = GameStateUpdateMessage(
+                players=[p.to_dict() for p in room.players.values()],
+                bullets=[],  # 房间大厅不需要子弹信息
+                game_time=room.game_time,
+                frame_id=room.frame_id
+            )
+            await self.broadcast_to_room(message.room_id, room_update_message)
+            
+            print(f"✅ Player {client_id} moved from slot {old_slot} to slot {message.target_slot}")
+        else:
+            # 槽位切换失败
+            error_msg = create_error_message("SLOT_UNAVAILABLE", f"Slot {message.target_slot} is not available")
+            await self.send_message(websocket, error_msg)
+    
+    async def handle_room_start_game(self, websocket: WebSocketServerProtocol, client_id: str, message: RoomStartGameMessage):
+        """处理房间开始游戏消息"""
+        room_id = message.room_id
+        if room_id not in self.rooms:
+            error_msg = create_error_message("ROOM_NOT_FOUND", f"Room {room_id} not found")
+            await self.send_message(websocket, error_msg)
+            return
+        
+        room = self.rooms[room_id]
+        
+        # 检查是否为房主
+        if not room.is_host(client_id):
+            error_msg = create_error_message("NOT_HOST", "Only the host can start the game")
+            await self.send_message(websocket, error_msg)
+            return
+        
+        # 启动游戏
+        if room.start_game():
+            print(f"🚀 Game started in room {room_id} by host {client_id}")
+            
+            # 广播游戏开始消息给房间内所有玩家
+            await self.broadcast_to_room(room_id, message)
+        else:
+            error_msg = create_error_message("CANNOT_START", "Cannot start game in current room state")
+            await self.send_message(websocket, error_msg)
     
     async def send_message(self, websocket: WebSocketServerProtocol, message: GameMessage):
         """发送消息给客户端"""

@@ -17,7 +17,7 @@ import sys
 import time
 import uuid
 import socket
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 import pygame
 import websockets
 from websockets.client import WebSocketClientProtocol
@@ -30,6 +30,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'shared'))
 from tank_game_messages import *
 # 导入共享的实体类
 from tank_game_entities import Player, Bullet
+# 导入状态机系统
+from game_states import GameStateManager, GameStateType
+from game_state_implementations import MainMenuState, ServerBrowserState, RoomLobbyState, InGameState
 
 # 加载环境变量 - 使用项目根目录的共享 .env 文件
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -82,10 +85,10 @@ COLORS = {
 }
 
 class GameClient:
-    """完美游戏客户端"""
+    """完美游戏客户端 - 现在使用状态机系统"""
     
-    def __init__(self, server_url: str = DEFAULT_SERVER_URL):
-        self.server_url = server_url
+    def __init__(self, server_url: str = None):
+        self.server_url = server_url or DEFAULT_SERVER_URL
         self.websocket: Optional[WebSocketClientProtocol] = None
         self.connected = False
         
@@ -151,7 +154,49 @@ class GameClient:
             self.big_font = pygame.font.Font(None, 32)
             print(f"⚠️ Error loading font: {e}, using default font")
         
-        print(f"✨ GameClient initialized for {server_url}")
+        # 初始化状态机
+        self.state_manager = GameStateManager()
+        self._register_states()
+        
+        print(f"✨ GameClient initialized for {self.server_url}")
+    
+    def _register_states(self):
+        """注册游戏状态"""
+        # 设置客户端引用给状态管理器，用于状态间的清理操作
+        self.state_manager.client_ref = self
+        
+        # 注册所有状态
+        self.state_manager.register_state(GameStateType.MAIN_MENU, MainMenuState(self.state_manager))
+        self.state_manager.register_state(GameStateType.SERVER_BROWSER, ServerBrowserState(self.state_manager))
+        
+        # 房间大厅状态需要特殊处理
+        room_lobby_state = RoomLobbyState(self.state_manager)
+        room_lobby_state.set_client(self)
+        self.state_manager.register_state(GameStateType.ROOM_LOBBY, room_lobby_state)
+        
+        # 游戏状态需要客户端引用
+        in_game_state = InGameState(self.state_manager)
+        in_game_state.client = self
+        self.state_manager.register_state(GameStateType.IN_GAME, in_game_state)
+        
+        # 开始时进入主菜单
+        self.state_manager.change_state(GameStateType.MAIN_MENU)
+    
+    def set_server_url(self, server_url: str):
+        """设置服务器URL"""
+        self.server_url = server_url
+        print(f"🔄 Server URL changed to: {server_url}")
+    
+    async def connect_to_server(self, server_url: str = None):
+        """连接到指定服务器"""
+        if server_url:
+            self.set_server_url(server_url)
+        
+        # 如果已经连接到其他服务器，先断开
+        if self.connected:
+            await self.disconnect()
+        
+        await self.connect()
     
     async def connect(self):
         """连接到服务器"""
@@ -170,6 +215,21 @@ class GameClient:
     
     async def disconnect(self):
         """断开连接"""
+        if self.connected and self.websocket and self.player_id:
+            try:
+                # 发送离开消息
+                leave_message = PlayerLeaveMessage(
+                    player_id=self.player_id,
+                    reason="normal"
+                )
+                await self.send_message(leave_message)
+                print(f"📤 Sent leave message for player {self.player_id}")
+                
+                # 等待一小段时间确保消息发送
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                print(f"⚠️ Error sending leave message: {e}")
+        
         if self.websocket:
             await self.websocket.close()
         self.connected = False
@@ -221,10 +281,16 @@ class GameClient:
             await self.handle_player_join(message)
         elif message.type == GameMessageType.PLAYER_LEAVE:
             await self.handle_player_leave(message)
+        elif message.type == GameMessageType.ROOM_CREATED:
+            await self.handle_room_created(message)
+        elif message.type == GameMessageType.SLOT_CHANGED:
+            await self.handle_slot_changed(message)
         elif message.type == GameMessageType.PONG:
             await self.handle_pong(message)
         elif message.type == GameMessageType.ERROR:
             await self.handle_error(message)
+        else:
+            print(f"⚠️ Unhandled message type: {message.type}")
     
     async def handle_connection_ack(self, message: ConnectionAckMessage):
         """处理连接确认"""
@@ -232,12 +298,20 @@ class GameClient:
         self.player_id = message.assigned_player_id
         print(f"🆔 Assigned player ID: {self.player_id}")
         
-        # 发送加入游戏消息
-        join_message = PlayerJoinMessage(
-            player_id=self.player_id,
-            player_name=self.player_name
-        )
-        await self.send_message(join_message)
+        # 检查是否需要自动加入（对于非房主客户端）
+        current_state = self.state_manager.get_current_state_type()
+        if current_state == GameStateType.ROOM_LOBBY:
+            room_lobby_state = self.state_manager.states.get(GameStateType.ROOM_LOBBY)
+            if room_lobby_state and not room_lobby_state.is_host:
+                # 非房主客户端，加入默认房间
+                join_message = PlayerJoinMessage(
+                    player_id=self.player_id,
+                    player_name=self.player_name,
+                    room_id="default"  # 加入默认房间
+                )
+                await self.send_message(join_message)
+                print(f"📤 Sent join message for default room")
+        # 房主客户端不在这里发送加入消息，等待房间创建成功后发送
     
     async def handle_game_state_update(self, message: GameStateUpdateMessage):
         """处理游戏状态更新 - 完美同步"""
@@ -253,13 +327,14 @@ class GameClient:
                 # 更新其他属性
                 self.players[player_id].health = player_data.get('health', 100)
                 self.players[player_id].is_alive = player_data.get('is_alive', True)
+                self.players[player_id].slot_index = player_data.get('slot_index', 0)
             else:
                 # 新玩家
                 new_player = Player(player_data)
                 self.players[player_id] = new_player
                 
                 if player_id == self.player_id:
-                    print(f"🎮 Local player initialized at {new_player.position}")
+                    print(f"🎮 Local player initialized at slot {new_player.slot_index}, position {new_player.position}")
         
         # 更新子弹状态
         server_bullets = {b['bullet_id']: b for b in message.bullets}
@@ -277,6 +352,16 @@ class GameClient:
         
         for bullet_id in bullets_to_remove:
             del self.bullets[bullet_id]
+        
+        # 如果当前在房间大厅状态，更新房间显示
+        current_state = self.state_manager.get_current_state_type()
+        if current_state == GameStateType.ROOM_LOBBY:
+            room_data = {
+                'players': message.players,
+                'game_time': message.game_time,
+                'frame_id': message.frame_id
+            }
+            self.update_room_display(room_data)
     
     async def handle_player_move(self, message: PlayerMoveMessage):
         """处理其他玩家移动"""
@@ -334,6 +419,35 @@ class GameClient:
             print(f"👋 Player {player_name} left")
             del self.players[message.player_id]
     
+    async def handle_room_created(self, message: RoomCreatedMessage):
+        """处理房间创建成功"""
+        print(f"🏠 Room created successfully: {message.room_name} (ID: {message.room_id})")
+        
+        # 更新房间大厅状态的房间ID
+        room_lobby_state = self.state_manager.states.get(GameStateType.ROOM_LOBBY)
+        if room_lobby_state:
+            room_lobby_state.room_id = message.room_id
+            print(f"🔄 Updated room lobby state with room ID: {message.room_id}")
+        
+        # 发送加入游戏消息，指定房间ID
+        join_message = PlayerJoinMessage(
+            player_id=self.player_id,
+            player_name=self.player_name,
+            room_id=message.room_id
+        )
+        await self.send_message(join_message)
+        print(f"📤 Sent join message for room {message.room_id}")
+    
+    async def handle_slot_changed(self, message: SlotChangedMessage):
+        """处理玩家槽位变化"""
+        if message.player_id in self.players:
+            self.players[message.player_id].slot_index = message.new_slot
+            print(f"🎮 Player {message.player_id} moved to slot {message.new_slot + 1}")
+        
+        # 如果是本地玩家的槽位变化，给出反馈
+        if message.player_id == self.player_id:
+            print(f"✅ You moved to slot {message.new_slot + 1}")
+    
     async def handle_pong(self, message: PongMessage):
         """处理 Pong 响应"""
         if message.sequence in self.ping_times:
@@ -384,6 +498,7 @@ class GameClient:
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # 左键
                 self.input_state['mouse_clicked'] = True
+                print(f"🖱️ Mouse clicked at {event.pos}, state: connected={self.connected}, player_id={self.player_id}")
         
         elif event.type == pygame.MOUSEMOTION:
             # 直接使用鼠标坐标
@@ -476,6 +591,7 @@ class GameClient:
     async def send_shoot(self):
         """发送射击消息 - 使用准确的玩家位置"""
         if not self.connected or not self.player_id or self.player_id not in self.players:
+            print(f"🚫 Cannot shoot: connected={self.connected}, player_id={self.player_id}, in_players={self.player_id in self.players if self.player_id else False}")
             return
         
         # 使用当前玩家的准确位置
@@ -500,6 +616,7 @@ class GameClient:
             bullet_id=str(uuid.uuid4())
         )
         await self.send_message(shoot_message)
+        print(f"💥 Sent shoot message: pos=({player_pos['x']:.1f}, {player_pos['y']:.1f}), dir=({dx:.2f}, {dy:.2f})")
         
         # 重置点击状态
         self.input_state['mouse_clicked'] = False
@@ -650,16 +767,125 @@ class GameClient:
             control_surface = self.small_font.render(control, True, COLORS['GRAY'])
             self.screen.blit(control_surface, (SCREEN_WIDTH - 150, 10 + i * 20))
 
+    def render_in_game_ui(self):
+        """渲染游戏中的UI信息"""
+        y_offset = 10
+        
+        # 连接状态
+        status_text = "Connected" if self.connected else "Disconnected"
+        status_color = COLORS['GREEN'] if self.connected else COLORS['RED']
+        status_surface = self.font.render(f"Status: {status_text}", True, status_color)
+        self.screen.blit(status_surface, (10, y_offset))
+        y_offset += 25
+        
+        # 玩家信息
+        if self.player_id:
+            player_text = f"Player: {self.player_name}"
+            player_surface = self.font.render(player_text, True, COLORS['WHITE'])
+            self.screen.blit(player_surface, (10, y_offset))
+            y_offset += 25
+        
+        # 网络延迟
+        ping_color = COLORS['GREEN'] if self.current_ping < 50 else COLORS['ORANGE'] if self.current_ping < 100 else COLORS['RED']
+        ping_text = f"Ping: {self.current_ping}ms"
+        ping_surface = self.font.render(ping_text, True, ping_color)
+        self.screen.blit(ping_surface, (10, y_offset))
+        y_offset += 25
+        
+        # FPS 显示
+        fps_color = COLORS['GREEN'] if self.fps_counter >= 55 else COLORS['ORANGE'] if self.fps_counter >= 30 else COLORS['RED']
+        fps_text = f"FPS: {self.fps_counter}"
+        fps_surface = self.font.render(fps_text, True, fps_color)
+        self.screen.blit(fps_surface, (10, y_offset))
+        y_offset += 25
+        
+        # 游戏统计
+        stats_text = f"Players: {len(self.players)} | Bullets: {len(self.bullets)}"
+        stats_surface = self.font.render(stats_text, True, COLORS['WHITE'])
+        self.screen.blit(stats_surface, (10, y_offset))
+        y_offset += 25
+        
+        # 位置信息（调试）
+        if self.player_id and self.player_id in self.players:
+            pos = self.players[self.player_id].position
+            pos_text = f"Position: ({pos['x']:.1f}, {pos['y']:.1f})"
+            pos_surface = self.small_font.render(pos_text, True, COLORS['GRAY'])
+            self.screen.blit(pos_surface, (10, y_offset))
+        
+        # 控制说明
+        controls = [
+            "WASD: Move",
+            "Mouse: Aim & Shoot",
+            "ESC: Back to Room"
+        ]
+        
+        for i, control in enumerate(controls):
+            control_surface = self.small_font.render(control, True, COLORS['GRAY'])
+            self.screen.blit(control_surface, (SCREEN_WIDTH - 150, 10 + i * 20))
+    
+    def render_game_world(self):
+        """渲染游戏世界（坦克、子弹等）"""
+        # 渲染玩家
+        for player_id, player in self.players.items():
+            if not player.is_alive:
+                continue
+                
+            pos = player.position  # 使用单一位置源
+            color = COLORS['GREEN'] if player_id == self.player_id else COLORS['BLUE']
+            
+            # 绘制坦克
+            tank_rect = pygame.Rect(pos['x'] - 15, pos['y'] - 15, 30, 30)
+            pygame.draw.rect(self.screen, color, tank_rect)
+            
+            # 如果是本地玩家，添加特殊标识
+            if player_id == self.player_id:
+                pygame.draw.rect(self.screen, COLORS['ORANGE'], tank_rect, 3)
+            
+            # 绘制玩家名称
+            name_text = self.small_font.render(player.name, True, COLORS['WHITE'])
+            name_rect = name_text.get_rect(center=(pos['x'], pos['y'] - 25))
+            self.screen.blit(name_text, name_rect)
+            
+            # 绘制血条
+            if player.health < player.max_health:
+                health_ratio = player.health / player.max_health
+                health_width = 30
+                health_height = 4
+                
+                # 背景
+                health_bg = pygame.Rect(pos['x'] - 15, pos['y'] - 35, health_width, health_height)
+                pygame.draw.rect(self.screen, COLORS['RED'], health_bg)
+                
+                # 血量
+                health_fg = pygame.Rect(pos['x'] - 15, pos['y'] - 35, 
+                                      health_width * health_ratio, health_height)
+                pygame.draw.rect(self.screen, COLORS['GREEN'], health_fg)
+        
+        # 渲染子弹
+        for bullet in self.bullets.values():
+            pos = bullet.position
+            pygame.draw.circle(self.screen, COLORS['YELLOW'], 
+                             (int(pos['x']), int(pos['y'])), 4)
+            # 子弹中心点
+            pygame.draw.circle(self.screen, COLORS['WHITE'], 
+                             (int(pos['x']), int(pos['y'])), 2)
+
+    def update_room_display(self, room_data: Dict[str, Any]):
+        """更新房间显示（供消息处理器调用）"""
+        room_lobby_state = self.state_manager.states.get(GameStateType.ROOM_LOBBY)
+        if room_lobby_state and hasattr(room_lobby_state, 'update_room'):
+            room_lobby_state.update_room(room_data)
+
 
 async def game_loop(client: GameClient):
-    """完美游戏主循环"""
+    """完美游戏主循环 - 现在使用状态机"""
     last_ping_time = 0
     ping_interval = 2.0
     
     running = True
     
-    print("✨ Perfect Game Loop Started!")
-    print("🎯 Zero jitter, perfect prediction, consistent sync")
+    print("✨ Perfect Game Loop Started with State Machine!")
+    print("🎯 Starting at Main Menu")
     
     while running:
         current_time = time.time()
@@ -671,37 +897,79 @@ async def game_loop(client: GameClient):
                 running = False
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    running = False
+                    # ESC 键的处理交给状态机
+                    if not client.state_manager.handle_event(event):
+                        # 如果状态机没有处理，就退出游戏
+                        running = False
                 else:
-                    client.handle_input(event)
+                    # 其他按键事件交给状态机处理
+                    client.state_manager.handle_event(event)
+                    # 如果在游戏状态中，也要处理传统的输入
+                    current_state = client.state_manager.get_current_state_type()
+                    if current_state == GameStateType.IN_GAME:
+                        client.handle_input(event)
             elif event.type == pygame.KEYUP:
-                client.handle_input(event)
+                # 按键释放事件
+                client.state_manager.handle_event(event)
+                current_state = client.state_manager.get_current_state_type()
+                if current_state == GameStateType.IN_GAME:
+                    client.handle_input(event)
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                client.handle_input(event)
+                # 鼠标点击事件
+                client.state_manager.handle_event(event)
+                current_state = client.state_manager.get_current_state_type()
+                if current_state == GameStateType.IN_GAME:
+                    client.handle_input(event)
             elif event.type == pygame.MOUSEMOTION:
-                client.handle_input(event)
+                # 鼠标移动事件
+                client.state_manager.handle_event(event)
+                current_state = client.state_manager.get_current_state_type()
+                if current_state == GameStateType.IN_GAME:
+                    client.handle_input(event)
+            else:
+                # 所有其他事件都交给状态机处理
+                client.state_manager.handle_event(event)
         
-        # 更新本地玩家（与服务器相同算法）
-        client.update_local_player(dt)
+        # 更新状态机
+        client.state_manager.update(dt)
         
-        # 发送移动更新（智能发送）
-        await client.send_movement_if_changed()
+        # 只有在游戏状态中才处理网络和游戏逻辑
+        current_state = client.state_manager.get_current_state_type()
+        if current_state == GameStateType.IN_GAME and client.connected:
+            # 更新本地玩家（与服务器相同算法）
+            client.update_local_player(dt)
+            
+            # 发送移动更新（智能发送）
+            await client.send_movement_if_changed()
+            
+            # 处理射击
+            if client.input_state['mouse_clicked']:
+                await client.send_shoot()
+            
+            # 发送 ping
+            if current_time - last_ping_time > ping_interval:
+                await client.send_ping()
+                last_ping_time = current_time
+            
+            # 更新游戏对象
+            client.update_game_objects(dt)
         
-        # 处理射击
-        if client.input_state['mouse_clicked']:
-            await client.send_shoot()
+        # 渲染当前状态
+        client.state_manager.render(client.screen)
         
-        # 发送 ping
-        if current_time - last_ping_time > ping_interval:
-            await client.send_ping()
-            last_ping_time = current_time
+        # 在游戏状态中渲染额外的UI信息
+        if current_state == GameStateType.IN_GAME:
+            client.render_in_game_ui()
         
-        # 更新游戏对象
-        client.update_game_objects(dt)
-        
-        # 渲染
-        client.render()
+        pygame.display.flip()
         client.clock.tick(FPS)
+        
+        # 更新 FPS 计数
+        client.frame_count += 1
+        if current_time - client.last_fps_time >= 1.0:
+            client.fps_counter = client.frame_count
+            client.frame_count = 0
+            client.last_fps_time = current_time
         
         # 让出控制权给其他协程
         await asyncio.sleep(0.001)
@@ -762,60 +1030,19 @@ def determine_server_url():
 
 
 async def main():
-    """主函数"""
-    # 确定服务器URL
-    server_url = determine_server_url()
-    if server_url is None:
-        return  # 用户选择了扫描，程序退出
-    
-    print("✨ Starting Perfect Tank Game Client...")
+    """主函数 - 现在启动状态机而不是直接连接服务器"""
+    print("✨ Starting Perfect Tank Game Client with State Machine...")
     print("=" * 50)
-
     print(f"  • Fixed window size ({SCREEN_WIDTH}x{SCREEN_HEIGHT})")
-    print("=" * 50)
-    print(f"🌐 Target server: {server_url}")
-    if server_url == DEFAULT_SERVER_URL:
-        print(f"📍 Local machine IP: {DEFAULT_LOCAL_IP}")
-        print("💡 This will connect to the server running on this computer")
-    else:
-        print("💡 This will connect to a remote server")
-    print("💡 Tip: Use --scan to find servers on local network")
+    print(f"  • State machine enabled")
     print("=" * 50)
     
-
-    client = GameClient(server_url)
+    # 创建客户端（但不立即连接）
+    client = GameClient()
+    
     try:
-        # 连接到服务器
-        await client.connect()
-        
-        if client.connected:
-            # 启动完美游戏循环
-            await game_loop(client)
-        else:
-            print("❌ Failed to connect to server")
-            print("=" * 50)
-            print("🔧 Troubleshooting Steps:")
-            print("1. 🔍 Scan for servers:")
-            print("   python home/tank_game_client.py --scan")
-            print()
-            print("2. 🌐 Connect to specific server:")
-            print("   python home/tank_game_client.py --host [SERVER_IP]")
-            print()
-            print("3. ✅ Common checks:")
-            print("   • Server is running on target machine")
-            print("   • Both computers on same network")
-            print("   • Firewall allows port 8765")
-            print("   • Use server's IP, not your own IP")
-            print()
-            if server_url == DEFAULT_SERVER_URL:
-                print("4. 💡 You're trying to connect to your own machine:")
-                print(f"   • Make sure server is running on {DEFAULT_LOCAL_IP}")
-                print("   • Or specify remote server with --host")
-            else:
-                print("4. 🎯 Connection target:")
-                print(f"   • Trying to connect to: {server_url}")
-                print("   • Make sure this is the correct server address")
-            print("=" * 50)
+        # 启动状态机游戏循环
+        await game_loop(client)
     
     except KeyboardInterrupt:
         print("\n🛑 Client shutting down...")

@@ -40,6 +40,14 @@ class GameMessageType(str, Enum):
     ROOM_LEAVE = "room_leave"
     ROOM_LIST = "room_list"
     ROOM_CREATED = "room_created"
+    ROOM_START_GAME = "room_start_game"
+    ROOM_END_GAME = "room_end_game"
+    ROOM_UPDATE = "room_update"
+    ROOM_DELETED = "room_deleted"
+    SERVER_LIST = "server_list"
+    CREATE_ROOM_REQUEST = "create_room_request"
+    SLOT_CHANGE_REQUEST = "slot_change_request"
+    SLOT_CHANGED = "slot_changed"
     
     # 系统消息
     CONNECTION_ACK = "connection_ack"
@@ -348,6 +356,114 @@ class RoomCreatedMessage(BaseGameMessage):
         return GameMessageType.ROOM_CREATED
 
 
+@dataclass
+class CreateRoomRequestMessage(BaseGameMessage):
+    """创建房间请求消息"""
+    
+    room_name: str
+    max_players: int
+    creator_id: str
+    game_mode: str = "classic"
+    password: Optional[str] = None
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.CREATE_ROOM_REQUEST
+
+
+@dataclass
+class RoomStartGameMessage(BaseGameMessage):
+    """房间开始游戏消息"""
+    
+    room_id: str
+    host_player_id: str
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.ROOM_START_GAME
+
+
+@dataclass
+class RoomEndGameMessage(BaseGameMessage):
+    """房间结束游戏消息"""
+    
+    room_id: str
+    reason: str = "host_ended"  # "host_ended", "all_players_dead", "timeout"
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.ROOM_END_GAME
+
+
+@dataclass
+class RoomUpdateMessage(BaseGameMessage):
+    """房间状态更新消息"""
+    
+    room_data: Dict[str, Any]  # 完整的房间数据
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.ROOM_UPDATE
+
+
+@dataclass
+class RoomDeletedMessage(BaseGameMessage):
+    """房间删除消息"""
+    
+    room_id: str
+    reason: str = "host_left"  # "host_left", "empty", "expired"
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.ROOM_DELETED
+
+
+@dataclass
+class ServerListMessage(BaseGameMessage):
+    """服务器列表消息"""
+    
+    servers: List[Dict[str, Any]]  # 服务器信息列表
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.SERVER_LIST
+
+
+@dataclass
+class SlotChangeRequestMessage(BaseGameMessage):
+    """槽位切换请求消息"""
+    
+    player_id: str
+    target_slot: int
+    room_id: str = "default"
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.SLOT_CHANGE_REQUEST
+
+
+@dataclass
+class SlotChangedMessage(BaseGameMessage):
+    """槽位切换完成消息"""
+    
+    player_id: str
+    old_slot: int
+    new_slot: int
+    room_id: str = "default"
+    timestamp: Optional[float] = None
+    
+    @property
+    def type(self) -> GameMessageType:
+        return GameMessageType.SLOT_CHANGED
+
+
 # ===============================
 # 系统消息
 # ===============================
@@ -445,11 +561,15 @@ MESSAGE_TYPE_MAP = {
     GameMessageType.ROOM_LEAVE: RoomLeaveMessage,
     GameMessageType.ROOM_LIST: RoomListMessage,
     GameMessageType.ROOM_CREATED: RoomCreatedMessage,
+    GameMessageType.CREATE_ROOM_REQUEST: CreateRoomRequestMessage,
+    GameMessageType.ROOM_START_GAME: RoomStartGameMessage,
     GameMessageType.CONNECTION_ACK: ConnectionAckMessage,
     GameMessageType.PING: PingMessage,
     GameMessageType.PONG: PongMessage,
     GameMessageType.ERROR: ErrorMessage,
     GameMessageType.DEBUG: DebugMessage,
+    GameMessageType.SLOT_CHANGE_REQUEST: SlotChangeRequestMessage,
+    GameMessageType.SLOT_CHANGED: SlotChangedMessage,
 }
 
 
@@ -503,5 +623,7 @@ GameMessage = Union[
     BulletDestroyedMessage, CollisionMessage, PlayerDeathMessage,
     PlayerHitMessage, PlayerDestroyedMessage, RoomJoinMessage,
     RoomLeaveMessage, RoomListMessage, RoomCreatedMessage,
-    ConnectionAckMessage, PingMessage, PongMessage, ErrorMessage, DebugMessage
+    CreateRoomRequestMessage, RoomStartGameMessage,
+    ConnectionAckMessage, PingMessage, PongMessage, ErrorMessage, DebugMessage,
+    SlotChangeRequestMessage, SlotChangedMessage
 ] 

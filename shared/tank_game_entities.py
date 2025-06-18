@@ -8,7 +8,7 @@
 
 import time
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from websockets.server import WebSocketServerProtocol
 from dotenv import load_dotenv
 
@@ -22,6 +22,7 @@ TANK_SPEED = int(os.getenv('TANK_SPEED', 300))
 BULLET_SPEED = int(os.getenv('BULLET_SPEED', 300))
 BULLET_DAMAGE = int(os.getenv('BULLET_DAMAGE', 25))
 BULLET_LIFETIME = float(os.getenv('BULLET_LIFETIME', 5.0))
+MAX_PLAYERS_PER_ROOM = int(os.getenv('MAX_PLAYERS_PER_ROOM', 8))
 
 
 class Player:
@@ -33,6 +34,7 @@ class Player:
         self.health = player_data.get('health', 100)
         self.max_health = player_data.get('max_health', 100)
         self.is_alive = player_data.get('is_alive', True)
+        self.slot_index = player_data.get('slot_index', 0)  # 玩家槽位索引
         
         # 位置和运动
         self.position = player_data.get('position', {"x": SCREEN_WIDTH/2, "y": SCREEN_HEIGHT/2}).copy()
@@ -120,7 +122,8 @@ class Player:
             "health": self.health,
             "max_health": self.max_health,
             "is_alive": self.is_alive,
-            "moving_directions": self.moving_directions
+            "moving_directions": self.moving_directions,
+            "slot_index": getattr(self, 'slot_index', 0)
         }
 
 
@@ -168,4 +171,194 @@ class Bullet:
             "damage": self.damage,
             "created_time": self.created_time
         }
+
+
+class GameRoom:
+    """游戏房间 - 供服务器和客户端共享使用"""
+    
+    def __init__(self, room_id: str, name: str, host_player_id: str, max_players: int = None):
+        self.room_id = room_id
+        self.name = name
+        self.host_player_id = host_player_id  # 房主玩家ID
+        self.max_players = max_players if max_players is not None else MAX_PLAYERS_PER_ROOM
+        self.players: Dict[str, Player] = {}
+        self.bullets: Dict[str, Bullet] = {}
+        self.game_time = 0.0
+        self.frame_id = 0
+        self.last_update = time.time()
+        
+        # 房间状态
+        self.room_state = "waiting"  # waiting, playing, finished
+        self.created_time = time.time()
+        
+        # 事件驱动相关（主要用于服务器）
+        self.pending_events = []
+        self.state_changed = False
+        
+    def add_player(self, player: Player) -> bool:
+        """添加玩家到房间"""
+        if len(self.players) >= self.max_players:
+            return False
+        
+        # 计算玩家的槽位索引
+        slot_index = len(self.players)
+        player.slot_index = slot_index
+        
+        # 根据槽位计算生成位置
+        spawn_position = self._calculate_spawn_position(slot_index)
+        player.position = spawn_position
+        
+        self.players[player.player_id] = player
+        self.state_changed = True
+        return True
+    
+    def _calculate_spawn_position(self, slot_index: int) -> Dict[str, float]:
+        """根据槽位索引计算生成位置"""
+        # 定义生成位置（围绕地图边缘分布）
+        positions = [
+            {"x": 100, "y": 100},    # 左上
+            {"x": SCREEN_WIDTH - 100, "y": 100},    # 右上
+            {"x": 100, "y": SCREEN_HEIGHT - 100},   # 左下
+            {"x": SCREEN_WIDTH - 100, "y": SCREEN_HEIGHT - 100},  # 右下
+            {"x": SCREEN_WIDTH // 2, "y": 100},     # 上中
+            {"x": SCREEN_WIDTH // 2, "y": SCREEN_HEIGHT - 100},  # 下中
+            {"x": 100, "y": SCREEN_HEIGHT // 2},    # 左中
+            {"x": SCREEN_WIDTH - 100, "y": SCREEN_HEIGHT // 2},  # 右中
+        ]
+        
+        # 如果槽位索引超出预定义位置，使用随机位置
+        if slot_index < len(positions):
+            return positions[slot_index].copy()
+        else:
+            # 随机位置（避免重叠）
+            import random
+            return {
+                "x": random.randint(50, SCREEN_WIDTH - 50),
+                "y": random.randint(50, SCREEN_HEIGHT - 50)
+            }
+        
+    def remove_player(self, player_id: str) -> bool:
+        """从房间移除玩家"""
+        if player_id in self.players:
+            del self.players[player_id]
+            self.state_changed = True
+            
+            # 如果房主离开，选择新房主或关闭房间
+            if player_id == self.host_player_id:
+                remaining_players = list(self.players.keys())
+                if remaining_players:
+                    self.host_player_id = remaining_players[0]
+                    print(f"🔄 New room host: {self.host_player_id}")
+                else:
+                    # 房间空了，标记为可删除
+                    return "delete_room"
+            
+            return True
+        return False
+    
+    def add_bullet(self, bullet: Bullet):
+        """添加子弹"""
+        self.bullets[bullet.bullet_id] = bullet
+        self.state_changed = True
+    
+    def start_game(self) -> bool:
+        """开始游戏（仅房主可调用）"""
+        if self.room_state == "waiting" and len(self.players) > 0:
+            self.room_state = "playing"
+            self.state_changed = True
+            return True
+        return False
+    
+    def end_game(self):
+        """结束游戏"""
+        self.room_state = "finished"
+        self.state_changed = True
+    
+    def reset_for_new_game(self):
+        """重置房间准备新游戏"""
+        self.room_state = "waiting"
+        self.bullets.clear()
+        self.game_time = 0.0
+        self.frame_id = 0
+        
+        # 重置所有玩家状态
+        for player in self.players.values():
+            player.health = player.max_health
+            player.is_alive = True
+            player.position = {"x": SCREEN_WIDTH/2, "y": SCREEN_HEIGHT/2}
+            player.moving_directions = {"w": False, "a": False, "s": False, "d": False}
+        
+        self.state_changed = True
+    
+    def get_available_slots(self) -> List[int]:
+        """获取可用的玩家位置槽"""
+        occupied_slots = [i for i in range(len(self.players))]
+        all_slots = list(range(self.max_players))
+        return [slot for slot in all_slots if slot not in occupied_slots]
+    
+    def is_host(self, player_id: str) -> bool:
+        """检查玩家是否为房主"""
+        return player_id == self.host_player_id
+    
+    def can_start_game(self) -> bool:
+        """检查是否可以开始游戏"""
+        return (self.room_state == "waiting" and 
+                len(self.players) >= 1 and  # 至少需要1个玩家
+                len(self.players) <= self.max_players)
+    
+    def to_dict(self) -> Dict:
+        """转换为字典 - 用于网络传输和UI显示"""
+        return {
+            "room_id": self.room_id,
+            "name": self.name,
+            "host_player_id": self.host_player_id,
+            "max_players": self.max_players,
+            "current_players": len(self.players),
+            "players": [player.to_dict() for player in self.players.values()],
+            "bullets": [bullet.to_dict() for bullet in self.bullets.values()] if self.room_state == "playing" else [],
+            "game_time": self.game_time,
+            "frame_id": self.frame_id,
+            "room_state": self.room_state,
+            "created_time": self.created_time,
+            "available_slots": self.get_available_slots()
+        }
+
+    def change_player_slot(self, player_id: str, target_slot: int) -> bool:
+        """切换玩家槽位"""
+        if player_id not in self.players:
+            return False
+        
+        # 检查目标槽位是否有效
+        if target_slot < 0 or target_slot >= self.max_players:
+            return False
+        
+        # 检查目标槽位是否已被占用
+        for pid, player in self.players.items():
+            if pid != player_id and player.slot_index == target_slot:
+                return False  # 槽位已被占用
+        
+        # 执行槽位切换
+        player = self.players[player_id]
+        old_slot = player.slot_index
+        player.slot_index = target_slot
+        
+        # 根据新槽位更新生成位置
+        new_position = self._calculate_spawn_position(target_slot)
+        player.position = new_position
+        
+        self.state_changed = True
+        print(f"🔄 Player {player_id} moved from slot {old_slot} to slot {target_slot}")
+        return True
+    
+    def get_occupied_slots(self) -> List[int]:
+        """获取已占用的槽位列表"""
+        return [player.slot_index for player in self.players.values()]
+    
+    def is_slot_available(self, slot_index: int) -> bool:
+        """检查槽位是否可用"""
+        if slot_index < 0 or slot_index >= self.max_players:
+            return False
+        
+        occupied_slots = self.get_occupied_slots()
+        return slot_index not in occupied_slots
 
